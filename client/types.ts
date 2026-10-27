@@ -1,0 +1,124 @@
+export type User = { id: string; name: string; role: "admin" | "member" };
+export type Ingredient = {
+  id: string;
+  name: string;
+  quantity: number;
+  unit: string;
+  section: string;
+  note?: string;
+};
+export type Recipe = {
+  id: string;
+  title: string;
+  category: string;
+  cuisine: string;
+  protein: string;
+  cut: string;
+  vegetables: string;
+  prep: number;
+  cook: number;
+  servings: number;
+  description: string;
+  image: string;
+  ingredients: Ingredient[];
+  steps: string[];
+  tags: string[];
+  glutenFree: boolean;
+  dairy: boolean;
+  egg: boolean;
+  madeBefore: boolean | null;
+  favorite: boolean;
+  archived: boolean;
+  source: string;
+  sourceNote: string;
+  notes: string;
+  leftover: string;
+  version: number;
+};
+export type Round = {
+  id: number;
+  title: string;
+  status: string;
+  created_at: string;
+  recipeIds: string[];
+};
+export type Vote = {
+  round_id: number;
+  user_id: string;
+  recipe_id: string;
+  choice: "yes" | "no" | "maybe";
+};
+export type FamilyRequest = {
+  id: number;
+  user_id: string;
+  message: string;
+  category: "grocery" | "cooking";
+  quantity: number | null;
+  unit: string | null;
+  status: string;
+  created_at: string;
+};
+export type Day = {
+  id: number;
+  menu_id: number;
+  date: string;
+  recipe_id: string | null;
+  kind: "cook" | "leftover" | "out";
+  portions: number;
+  attendees: string;
+  locked: number;
+  leftover_of: number | null;
+  reason: string;
+};
+export type Task = {
+  id: number;
+  recipe_id: string;
+  request_id: number | null;
+  date: string;
+  portions: number;
+};
+export type Menu = {
+  id: number;
+  title: string;
+  start_date: string;
+  days: Day[];
+  tasks: Task[];
+  status: string;
+  round_id: number;
+};
+export type ShoppingItem = {
+  key: string;
+  name: string;
+  ingredientId?: string;
+  quantity: number;
+  unit: string;
+  section: string;
+  sources: string[];
+  checked: boolean;
+  have: boolean;
+  pantry: boolean;
+  purchaseQuantity: number | null;
+  optional?: boolean;
+};
+export type AppState = {
+  user: User;
+  ingredientCatalog: { id: string; name: string; section: string }[];
+  users: User[];
+  recipes: Recipe[];
+  rounds: Round[];
+  votes: Vote[];
+  favorites: string[];
+  requests: FamilyRequest[];
+  menus: Menu[];
+  shoppingManual: {
+    id: number;
+    menu_id: number;
+    name: string;
+    quantity: number;
+    unit: string;
+    request_id: number | null;
+  }[];
+  shoppingLists: Record<number, ShoppingItem[]>;
+  pantry: { ingredient_id: string; have: number; name: string }[];
+  settings: { tacoDay: number };
+};

@@ -147,3 +147,9 @@ vite.config.ts.timestamp-*
 
 # Turbo Repo
 .turbo
+
+# Shared database and local setup secrets
+data/
+playwright-report/
+test-results/
+.env.local
