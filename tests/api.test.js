@@ -3,15 +3,18 @@ import assert from "node:assert/strict";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { openDatabase } from "../server/db.js";
+import { openDatabase } from "../server/node-db.js";
 import { createApp } from "../server/app.js";
 test("shared household acceptance workflows and authorization", async (t) => {
   const dir = mkdtempSync(join(tmpdir(), "dinner-test-"));
   const filename = join(dir, "test.sqlite");
-  let db = openDatabase(filename);
-  let server = createApp(db).listen(0, "127.0.0.1");
-  await new Promise((r) => server.on("listening", r));
-  let base = `http://127.0.0.1:${server.address().port}`;
+  // Set TEST_BASE_URL (and TEST_SETUP_KEY) to run this same suite against a
+  // running Cloudflare Worker (for example `wrangler dev`) instead of Node.
+  const remote = process.env.TEST_BASE_URL;
+  let db = remote ? null : openDatabase(filename);
+  let server = remote ? null : createApp(db).listen(0, "127.0.0.1");
+  if (server) await new Promise((r) => server.on("listening", r));
+  let base = remote || `http://127.0.0.1:${server.address().port}`;
   const cookies = {};
   const send = async (user, path, method = "GET", body, status = 200) => {
     const r = await fetch(base + "/api" + path, {
@@ -36,6 +39,9 @@ test("shared household acceptance workflows and authorization", async (t) => {
           adminPassword: "test-admin-password",
           jamesPassword: "test-james-password",
           xanderPassword: "test-xander-password",
+          ...(process.env.TEST_SETUP_KEY
+            ? { setupKey: process.env.TEST_SETUP_KEY }
+            : {}),
         });
         await send("james", "/login", "POST", {
           userId: "james",
@@ -255,12 +261,14 @@ test("shared household acceptance workflows and authorization", async (t) => {
     await t.test(
       "database and sessions survive actual server shutdown and reopen",
       async () => {
-        await new Promise((r) => server.close(r));
-        db.close();
-        db = openDatabase(filename);
-        server = createApp(db).listen(0, "127.0.0.1");
-        await new Promise((r) => server.on("listening", r));
-        base = `http://127.0.0.1:${server.address().port}`;
+        if (!remote) {
+          await new Promise((r) => server.close(r));
+          db.close();
+          db = openDatabase(filename);
+          server = createApp(db).listen(0, "127.0.0.1");
+          await new Promise((r) => server.on("listening", r));
+          base = `http://127.0.0.1:${server.address().port}`;
+        }
         const s = await send("shani", "/state");
         assert.equal(s.votes.filter((v) => v.round_id === roundId).length, 3);
         assert.equal(
@@ -484,8 +492,8 @@ test("shared household acceptance workflows and authorization", async (t) => {
       },
     );
   } finally {
-    await new Promise((r) => server.close(r));
-    db.close();
+    if (server) await new Promise((r) => server.close(r));
+    if (db) db.close();
     rmSync(dir, { recursive: true, force: true });
   }
 });

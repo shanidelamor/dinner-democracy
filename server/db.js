@@ -1,16 +1,7 @@
-import { DatabaseSync } from "node:sqlite";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 import { recipes, defaultPantry, ingredientDefinitions } from "./recipes.js";
 
-export function openDatabase(
-  filename = process.env.DATABASE_PATH ||
-    resolve("data/dinner-democracy.sqlite"),
-) {
-  if (filename !== ":memory:")
-    mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
-  const db = new DatabaseSync(filename);
-  db.exec(`PRAGMA foreign_keys=ON; PRAGMA journal_mode=WAL; PRAGMA busy_timeout=5000;
+export function initSchema(db) {
+  db.exec(`
   CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','member')),password_hash TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
   CREATE TABLE IF NOT EXISTS recipes(id TEXT PRIMARY KEY,data TEXT NOT NULL,version INTEGER NOT NULL DEFAULT 1);
@@ -31,6 +22,10 @@ export function openDatabase(
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT DEFAULT CURRENT_TIMESTAMP);
   INSERT OR IGNORE INTO schema_migrations(version) VALUES(1);`);
+  const seeded =
+    db.prepare("SELECT count(*) n FROM recipes").get().n >= recipes.length &&
+    db.prepare("SELECT count(*) n FROM recipe_ingredients").get().n > 0;
+  if (seeded) return db;
   const insert = db.prepare(
     "INSERT OR IGNORE INTO recipes(id,data,version) VALUES(?,?,1)",
   );
@@ -84,6 +79,7 @@ export const allRecipes = (db) => {
     }));
 };
 export const transaction = (db, fn) => {
+  if (db.transactionSync) return db.transactionSync(fn);
   db.exec("BEGIN IMMEDIATE");
   try {
     const value = fn();

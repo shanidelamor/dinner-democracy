@@ -1,4 +1,4 @@
-import { openDatabase } from "./db.js";
+import { openDatabase } from "./node-db.js";
 import { createApp } from "./app.js";
 const db = openDatabase();
 const port = Number(process.env.PORT || 3001);

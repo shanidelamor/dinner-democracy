@@ -1,0 +1,16 @@
+{
+  "name": "dinner-democracy",
+  "main": "server/worker.js",
+  "compatibility_date": "2025-09-15",
+  "compatibility_flags": ["nodejs_compat"],
+  "assets": {
+    "directory": "./dist",
+    "not_found_handling": "single-page-application",
+    "run_worker_first": ["/api/*"]
+  },
+  "durable_objects": {
+    "bindings": [{ "name": "HOUSEHOLD", "class_name": "Household" }]
+  },
+  "migrations": [{ "tag": "v1", "new_sqlite_classes": ["Household"] }],
+  "observability": { "enabled": true }
+}

@@ -71,6 +71,7 @@ export function createApp(
     production = false,
     setupKey = process.env.SETUP_KEY,
     staticDir = resolve("dist"),
+    clientKey = (req) => req.ip,
   } = {},
 ) {
   const app = express();
@@ -122,6 +123,8 @@ export function createApp(
     limit: 30,
     standardHeaders: "draft-8",
     legacyHeaders: false,
+    keyGenerator: (req) => clientKey(req) || "unknown",
+    validate: { trustProxy: false, xForwardedForHeader: false },
     message: {
       error: "Too many sign-in attempts. Please try again in 15 minutes.",
     },

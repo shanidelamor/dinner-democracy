@@ -153,3 +153,7 @@ data/
 playwright-report/
 test-results/
 .env.local
+
+# Cloudflare
+.dev.vars
+.wrangler/
