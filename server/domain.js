@@ -1,3 +1,4 @@
+import { resolveRecipe } from "./recipe-options.js";
 const invalid = (message) => Object.assign(new Error(message), { status: 400 });
 export const sections = [
   "Produce",
@@ -25,7 +26,16 @@ export const safeFor = (recipe, attendees) =>
   !(
     attendees.includes("james") &&
     (["Fish", "Shrimp"].includes(recipe.protein) ||
-      recipe.ingredients?.some(i => ["salmon","cod","shrimp","tunaFish","tunaCan"].includes(i.id)) ||
+      recipe.ingredients?.some((i) =>
+        [
+          "salmon",
+          "pokeSalmon",
+          "cod",
+          "shrimp",
+          "tunaFish",
+          "tunaCan",
+        ].includes(i.id),
+      ) ||
       /asparagus/i.test(recipe.vegetables))
   );
 export const parseQuantity = (message) => {
@@ -184,8 +194,11 @@ export function shoppingList({
   if (!menu || menu.status !== "approved") return [];
   const list = new Map(),
     have = new Set(pantry.filter((p) => p.have).map((p) => p.ingredient_id));
-  const addRecipe = (id, portions, label) => {
-    const r = recipes.find((r) => r.id === id);
+  const addRecipe = (id, portions, label, variationId) => {
+    const r = resolveRecipe(
+      recipes.find((r) => r.id === id),
+      variationId,
+    );
     if (!r) throw invalid("Planned recipe is missing");
     for (const ing of r.ingredients) {
       const [dimension, factor] = unitTable[ing.unit] || [ing.unit, 1],
@@ -221,7 +234,17 @@ export function shoppingList({
     addRecipe(
       day.recipe_id,
       total,
-      `${day.date} · ${recipes.find((r) => r.id === day.recipe_id)?.title}${total > day.portions ? " (includes reserved leftovers)" : ""}`,
+      `${day.date} · ${recipes.find((r) => r.id === day.recipe_id)?.title}${total > day.portions ? " (includes reserved leftovers)" : ""}${
+        day.variation_id
+          ? ` · ${
+              resolveRecipe(
+                recipes.find((r) => r.id === day.recipe_id),
+                day.variation_id,
+              ).variationLabel
+            }`
+          : ""
+      }`,
+      day.variation_id,
     );
   }
   for (const task of tasks)
@@ -257,7 +280,10 @@ export function shoppingList({
 export function validateMenu(days, recipes) {
   for (const d of days) {
     if (d.kind === "out") continue;
-    const r = recipes.find((x) => x.id === d.recipe_id);
+    const r = resolveRecipe(
+      recipes.find((x) => x.id === d.recipe_id),
+      d.variation_id,
+    );
     if (!r || r.archived || r.category !== "Dinner" || !r.ingredients.length)
       throw invalid("Choose a complete active dinner recipe.");
     if (!safeFor(r, JSON.parse(d.attendees)))
@@ -270,6 +296,7 @@ export function validateMenu(days, recipes) {
         !source ||
         source.kind !== "cook" ||
         source.recipe_id !== d.recipe_id ||
+        (source.variation_id || null) !== (d.variation_id || null) ||
         source.date >= d.date ||
         datePlus(source.date, 3) < d.date
       )

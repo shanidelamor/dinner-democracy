@@ -1,3 +1,4 @@
+import { ingredientUpdates, applyFamilyReview } from "./family-review.js";
 // All quantities and methods are proposed reconstructions unless a supplied historical detail is cited.
 // No inaccessible conversation, historical rating, or prior cooking outcome is inferred.
 export const ingredientDefinitions = {
@@ -140,6 +141,7 @@ export const ingredientDefinitions = {
   salt: ["Fine salt", "Pantry and dry goods"],
   pepper: ["Black pepper", "Pantry and dry goods"],
 };
+Object.assign(ingredientDefinitions, ingredientUpdates);
 const I = (id, quantity, unit, note = "") => ({
   id,
   quantity,
@@ -1567,3 +1569,5 @@ export const defaultPantry = [
   "turmeric",
   "sesameOil",
 ];
+
+applyFamilyReview(recipes, ingredientDefinitions);

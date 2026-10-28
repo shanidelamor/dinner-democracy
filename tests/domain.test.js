@@ -48,7 +48,7 @@ test("inventory preserves source uncertainty, household rules and categories", (
     }
   }
   assert.ok(!recipes.some((r) => /stroganoff|moules/i.test(r.title)));
-  assert.equal(recipes.find((r) => r.id === "shepherds-pie").protein, "Lamb");
+  assert.equal(recipes.find((r) => r.id === "shepherds-pie").protein, "Beef");
   assert.equal(
     recipes.find((r) => r.id === "brown-butter-cookies").category,
     "Baking",
@@ -195,4 +195,11 @@ test("menu is deterministic, respects attendance, locked dishes and taco night",
   );
 });
 
-test('compatibility checks actual seafood ingredients after a recipe edit',()=>{const edited={...recipe,ingredients:[{id:'cod',quantity:1.5,unit:'lb'}]};assert.equal(safeFor(edited,['james']),false);assert.equal(safeFor(edited,['shani','xander']),true);});
+test("compatibility checks actual seafood ingredients after a recipe edit", () => {
+  const edited = {
+    ...recipe,
+    ingredients: [{ id: "cod", quantity: 1.5, unit: "lb" }],
+  };
+  assert.equal(safeFor(edited, ["james"]), false);
+  assert.equal(safeFor(edited, ["shani", "xander"]), true);
+});

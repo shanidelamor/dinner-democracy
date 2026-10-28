@@ -1,6 +1,6 @@
 # Validation evidence
 
-The current source passes `npm test` (**19 passing tests/subtests; zero failures/skips**) and `npm run build` (TypeScript + Vite). A Playwright Chromium test passes the complete family workflow using **three independent browser contexts**, including two phone-size viewports. These are simulated devices, not physical phone testing.
+The current source passes `npm test` (**26 passing tests/subtests; zero failures/skips**) and `npm run build` (TypeScript + Vite). Two Playwright Chromium tests pass the complete family workflow and recipe-option shopping checks using **three independent browser contexts**, including two phone-size viewports. These are simulated devices, not physical phone testing.
 
 Test accounts and votes live only in disposable test databases. The real workspace database is left at first-run setup, with no invented household passwords or votes.
 
@@ -40,3 +40,15 @@ The production Docker image also built successfully. `tests/docker-smoke.js` lau
 - Review recipe reconstructions, allergen/GF product labels, appropriate food handling, ingredient availability, package sizes and generous serving yields in your kitchen.
 - Verify the chosen host’s disk survives redeployment and test restoration from a consistent backup. A restart of the local API/database has been tested; no external host’s persistence is claimed.
 - GitHub Actions configuration is included but has not run on GitHub from this workspace.
+
+## Family recipe review verification
+
+The added checks verify regular cream for vodka rigatoni and mustard pork, salmon poke, shaved-beef/flank choices, arugula schnitzel, onion and hummus with lamb patties, a distinct bone-in harissa-chicken sheet-pan meal, enchilada cream/sour-cream options with romaine/onion/cilantro, three rib-seasoning choices, both mushroom-chicken cream choices, ground-beef pie and three mushroom varieties.
+
+Shopping tests assert that each rib choice contains only its own sauce ingredients, all vegetable sides remain, and linked leftovers scale one selected batch. Browser checks change an approved menu’s rib option, verify its cooking photo and ingredients, propagate that choice to leftovers, and confirm the shopping list changes accordingly. Cream choices change both ingredient lists and dairy labels.
+
+Catalog-update tests simulate an old database and preserve users, votes, requests, pantry, custom notes, custom descriptions and archive choices. A later catalog release also migrates correctly and repeat runs do not duplicate history. Only Shani can explicitly apply a conflicting reviewed field; the personal version remains in history.
+
+All 51 recipe-image paths and content hashes are distinct. The four extra images show the alternate shaved-beef, slaw and two rib preparations. Photos are compressed WebP, each below 300 KB at the time of this update; original category PNGs remain only for historical references.
+
+The Cloudflare local-runtime test runs the API acceptance suite, stops the runtime, starts it against the same local Durable Object storage, and verifies profiles, sessions, votes, requests, menus, pantry and shopping state are preserved. This validates the actual local runtime, not a live Cloudflare deployment or physical phones.

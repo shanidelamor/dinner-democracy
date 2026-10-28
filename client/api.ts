@@ -43,3 +43,20 @@ export const today = () => {
   const d = new Date();
   return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
 };
+
+export function resolveRecipeView(
+  recipe: import("./types").Recipe | undefined,
+  variationId?: string | null,
+): import("./types").Recipe | undefined {
+  if (!recipe || !variationId) return recipe;
+  const option = recipe.variations?.find((v) => v.id === variationId);
+  if (!option) return recipe;
+  const { id, label, ...values } = option;
+  return {
+    ...recipe,
+    ...values,
+    id: recipe.id,
+    selectedVariation: id,
+    variationLabel: label,
+  };
+}

@@ -228,3 +228,138 @@ test("three independent family sessions complete the core household workflow", a
   await xContext.close();
   await jamesContext.close();
 });
+
+test("recipe options change cooking photos and approved shopping without mixing sauces", async ({
+  page,
+}, testInfo) => {
+  await page.goto("/");
+  await page
+    .getByLabel("Password", { exact: true })
+    .fill("browser-admin-password");
+  await page.getByRole("button", { name: "Come on in" }).click();
+  await expect(
+    page.getByRole("heading", { name: "Good food. Better together." }),
+  ).toBeVisible();
+  const state = await (await page.request.get("/api/state")).json();
+  const generated = await page.request.post("/api/menus/generate", {
+    data: {
+      title: "Recipe options check",
+      startDate: "2030-03-04",
+      days: 7,
+      roundId: state.rounds[0].id,
+      attendees: ["shani", "james", "xander"],
+      portions: 3,
+      leftovers: false,
+    },
+  });
+  expect(generated.ok()).toBeTruthy();
+  const { id: menuId } = await generated.json();
+  const fresh = await (await page.request.get("/api/state")).json();
+  const menu = fresh.menus.find((m: any) => m.id === menuId);
+  for (const d of menu.days.slice(1)) {
+    const r = await page.request.patch(`/api/menu-days/${d.id}`, {
+      data: { kind: "out" },
+    });
+    expect(r.ok()).toBeTruthy();
+  }
+  await page.goto("/menu");
+  await page.getByRole("button", { name: "Edit 2030-03-04" }).click();
+  await page.getByLabel("Recipe", { exact: true }).selectOption("grilled-ribs");
+  await page.getByLabel("Recipe option", { exact: true }).selectOption("asian");
+  await page.getByRole("button", { name: "Save dinner" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  const leftover = await page.request.patch(
+    `/api/menu-days/${menu.days[1].id}`,
+    { data: { kind: "leftover", leftoverOf: menu.days[0].id } },
+  );
+  expect(leftover.ok()).toBeTruthy();
+  await page.reload();
+  await page.getByRole("button", { name: "Approve menu" }).click();
+  await expect(page.getByText("Approved for the table")).toBeVisible();
+  await page
+    .locator(".menu-day")
+    .first()
+    .getByRole("button", { name: "Grilled Pork Ribs", exact: true })
+    .click();
+  const recipe = page.getByRole("dialog");
+  await expect(recipe.getByLabel("Recipe option", { exact: true })).toHaveValue(
+    "asian",
+  );
+  await expect(recipe.locator(".detail-photo img")).toHaveAttribute(
+    "src",
+    "/images/recipes/grilled-ribs-asian.webp",
+  );
+  await expect(
+    recipe
+      .locator(".ingredients")
+      .getByText("Certified gluten-free gochujang", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    recipe
+      .locator(".ingredients")
+      .getByText("Gluten-free barbecue sauce", { exact: true }),
+  ).toHaveCount(0);
+  await recipe.getByRole("button", { name: "Close dialog" }).click();
+  await page.getByRole("link", { name: "Shopping list" }).click();
+  await expect(
+    page.getByText("Certified gluten-free gochujang", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    page.getByText("Gluten-free barbecue sauce", { exact: true }),
+  ).toHaveCount(0);
+  await page.getByRole("link", { name: "Weekly menu" }).click();
+  await page.getByRole("button", { name: "Edit 2030-03-04" }).click();
+  await page
+    .getByLabel("Recipe option", { exact: true })
+    .selectOption("garlic-salt");
+  await page.getByRole("button", { name: "Save dinner" }).click();
+  await expect(page.getByRole("dialog")).toHaveCount(0);
+  await page.getByRole("button", { name: "Approve menu" }).click();
+  await expect(page.getByText("Approved for the table")).toBeVisible();
+  const saved = await (await page.request.get("/api/state")).json();
+  const updated = saved.menus.find((m: any) => m.id === menuId);
+  expect(updated.days[0].variation_id).toBe("garlic-salt");
+  expect(updated.days[1].variation_id).toBe("garlic-salt");
+  await page.getByRole("link", { name: "Shopping list" }).click();
+  await expect(
+    page.getByText("Certified gluten-free gochujang", { exact: true }),
+  ).toHaveCount(0);
+  await expect(
+    page.getByText("Gluten-free barbecue sauce", { exact: true }),
+  ).toHaveCount(0);
+  const garlic = page
+    .locator(".shopping-row")
+    .filter({ has: page.getByText("Garlic cloves", { exact: true }) });
+  await expect(garlic.getByText("12 each", { exact: true })).toBeVisible();
+  await page.screenshot({
+    path: testInfo.outputPath("rib-option-shopping.png"),
+    fullPage: true,
+  });
+  await page.getByRole("link", { name: "Recipe library" }).click();
+  await page.getByLabel("Search recipes").fill("Creamy Mushroom Chicken");
+  await page
+    .getByRole("button", {
+      name: "Creamy Mushroom Chicken Thighs",
+      exact: true,
+    })
+    .click();
+  const detail = page.getByRole("dialog");
+  await expect(detail.getByText("Dairy-free", { exact: true })).toBeVisible();
+  await detail
+    .getByLabel("Recipe option", { exact: true })
+    .selectOption("regular-cream");
+  await expect(
+    detail.getByText("Contains dairy", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail
+      .locator(".ingredients")
+      .getByText("Heavy whipping cream", { exact: true }),
+  ).toBeVisible();
+  await expect(
+    detail.locator(".ingredients").getByText("Coconut cream", { exact: true }),
+  ).toHaveCount(0);
+  await detail.screenshot({
+    path: testInfo.outputPath("mushroom-chicken-cream-option.png"),
+  });
+});

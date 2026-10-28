@@ -1,3 +1,4 @@
+import { resolveRecipe } from "./recipe-options.js";
 import express from "express";
 import helmet from "helmet";
 import { rateLimit } from "express-rate-limit";
@@ -56,6 +57,10 @@ const vegetableIds = [
   "pumpkin",
   "peas",
   "sweetPotato",
+  "arugula",
+  "cauliflower",
+  "shiitake",
+  "oysterMushroom",
 ];
 const date = z
   .string()
@@ -103,10 +108,7 @@ export function createApp(
         try {
           if (
             new URL(origin).host !== req.get("host") &&
-            !(
-              process.env.NODE_ENV !== "production" &&
-              new URL(origin).hostname === "localhost"
-            )
+            !(!production && new URL(origin).hostname === "localhost")
           )
             return res
               .status(403)
@@ -558,6 +560,42 @@ export function createApp(
     });
     res.json({ ok: true });
   });
+  app.post("/api/recipes/:id/catalog-review", admin, (req, res) => {
+    const row = db
+      .prepare("SELECT * FROM recipes WHERE id=?")
+      .get(req.params.id);
+    if (!row) fail("Recipe not found.", 404);
+    const current = JSON.parse(row.data),
+      reviewed = allRecipes(db).find((r) => r.id === row.id)?.catalogProposal;
+    if (!reviewed || !current.catalogConflicts?.length)
+      fail("No pending recipe-library review.");
+    transaction(db, () => {
+      db.prepare(
+        "INSERT INTO recipe_versions(recipe_id,version,data,edited_by) VALUES(?,?,?,?)",
+      ).run(row.id, row.version, row.data, req.user.id);
+      const fields = Object.fromEntries(
+        current.catalogConflicts.map((field) => [field, reviewed[field]]),
+      );
+      const next = {
+        ...current,
+        ...fields,
+        catalogConflicts: [],
+        version: row.version + 1,
+      };
+      db.prepare("UPDATE recipes SET data=?,version=version+1 WHERE id=?").run(
+        JSON.stringify(next),
+        row.id,
+      );
+      saveIngredients(db, row.id, next.ingredients);
+      for (const m of db
+        .prepare(
+          "SELECT menu_id FROM menu_days WHERE recipe_id=? UNION SELECT menu_id FROM tasks WHERE recipe_id=?",
+        )
+        .all(row.id, row.id))
+        invalidate(m.menu_id);
+    });
+    res.json({ ok: true });
+  });
   app.get("/api/recipes/:id/history", admin, (req, res) =>
     res.json(
       db
@@ -572,7 +610,18 @@ export function createApp(
     const b = parse(
       z.object({
         title: z.string().trim().min(1).max(160),
-        protein: z.enum(["Chicken","Beef","Pork","Lamb","Fish","Shrimp","Turkey & beef","Vegetarian"]).optional(),
+        protein: z
+          .enum([
+            "Chicken",
+            "Beef",
+            "Pork",
+            "Lamb",
+            "Fish",
+            "Shrimp",
+            "Turkey & beef",
+            "Vegetarian",
+          ])
+          .optional(),
         cut: z.string().trim().min(5).max(250).optional(),
         vegetables: z.string().trim().min(3).max(250).optional(),
         prep: z.number().int().min(0).max(1440).optional(),
@@ -618,8 +667,17 @@ export function createApp(
       !b.ingredients.some((i) => vegetableIds.includes(i.id))
     )
       fail("Every dinner must keep a vegetable ingredient or side.");
-    const editedProtein=b.protein??original.protein, editedCut=b.cut??original.cut;
-    if(editedProtein==='Chicken'&&(!/breast|thigh/i.test(editedCut)||!/boneless|bone-in/i.test(editedCut)||!/skinless|skin-on/i.test(editedCut)))fail('Specify chicken breasts or thighs, boneless or bone-in, and skinless or skin-on.');
+    const editedProtein = b.protein ?? original.protein,
+      editedCut = b.cut ?? original.cut;
+    if (
+      editedProtein === "Chicken" &&
+      (!/breast|thigh/i.test(editedCut) ||
+        !/boneless|bone-in/i.test(editedCut) ||
+        !/skinless|skin-on/i.test(editedCut))
+    )
+      fail(
+        "Specify chicken breasts or thighs, boneless or bone-in, and skinless or skin-on.",
+      );
     if (original.archived)
       fail("Archived ideas must be developed in a separate recipe before use.");
     for (const i of b.ingredients)
@@ -641,6 +699,8 @@ export function createApp(
         version: old.version + 1,
         dairy: b.ingredients.some((i) =>
           [
+            "cream",
+            "sourCream",
             "butter",
             "goat",
             "parmesan",
@@ -826,7 +886,7 @@ export function createApp(
       if (prev) {
         if (!d.locked)
           db.prepare(
-            "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,leftover_of=NULL,reason=? WHERE id=?",
+            "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,leftover_of=NULL,variation_id=NULL,reason=? WHERE id=?",
           ).run(
             d.recipe_id,
             d.kind,
@@ -918,6 +978,7 @@ export function createApp(
     const b = parse(
       z.object({
         recipeId: z.string().nullable().optional(),
+        variationId: z.string().nullable().optional(),
         kind: z.enum(["cook", "leftover", "out"]).optional(),
         portions: quantity.optional(),
         attendees: z
@@ -941,9 +1002,16 @@ export function createApp(
       let source = b.leftoverOf !== undefined ? b.leftoverOf : d.leftover_of;
       let kind = b.kind || d.kind;
       let recipe = b.recipeId !== undefined ? b.recipeId : d.recipe_id;
+      let variation =
+        b.variationId !== undefined
+          ? b.variationId
+          : recipe === d.recipe_id
+            ? d.variation_id
+            : null;
       if (kind === "out") {
         recipe = null;
         source = null;
+        variation = null;
       }
       if (kind === "cook") source = null;
       if (kind === "leftover" && source) {
@@ -952,9 +1020,10 @@ export function createApp(
           .get(source, d.menu_id);
         if (!s) fail("Choose a cooked dinner in this menu.");
         recipe = s.recipe_id;
+        variation = s.variation_id;
       }
       db.prepare(
-        "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,locked=?,leftover_of=?,reason=? WHERE id=?",
+        "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,locked=?,leftover_of=?,variation_id=?,reason=? WHERE id=?",
       ).run(
         recipe,
         kind,
@@ -962,11 +1031,26 @@ export function createApp(
         b.attendees ? JSON.stringify(b.attendees) : d.attendees,
         b.locked === undefined ? d.locked : Number(b.locked),
         source,
+        variation || null,
         "Adjusted by Shani",
         d.id,
       );
       if (kind === "leftover" && b.locked)
         db.prepare("UPDATE menu_days SET locked=1 WHERE id=?").run(source);
+      if (
+        kind === "cook" &&
+        (recipe !== d.recipe_id ||
+          (variation || null) !== (d.variation_id || null))
+      ) {
+        const children = db
+          .prepare("SELECT * FROM menu_days WHERE leftover_of=?")
+          .all(d.id);
+        if (children.some((child) => child.locked))
+          fail("Unlock the linked leftover dinner before changing this batch.");
+        db.prepare(
+          "UPDATE menu_days SET recipe_id=?,variation_id=? WHERE leftover_of=?",
+        ).run(recipe, variation || null, d.id);
+      }
       validateMenu(dayRows(d.menu_id), allRecipes(db));
       invalidate(d.menu_id);
     });
@@ -996,8 +1080,14 @@ export function createApp(
         [c, a],
       ])
         db.prepare(
-          "UPDATE menu_days SET recipe_id=?,kind=?,reason=? WHERE id=?",
-        ).run(from.recipe_id, from.kind, "Moved by Shani", target.id);
+          "UPDATE menu_days SET recipe_id=?,kind=?,variation_id=?,reason=? WHERE id=?",
+        ).run(
+          from.recipe_id,
+          from.kind,
+          from.variation_id || null,
+          "Moved by Shani",
+          target.id,
+        );
       validateMenu(dayRows(m.id), allRecipes(db));
       invalidate(m.id);
     });
@@ -1156,23 +1246,17 @@ export function createApp(
   }
   app.use((error, req, res, next) => {
     if (error instanceof z.ZodError)
-      return res
-        .status(400)
-        .json({
-          error: error.issues
-            .map((i) => `${i.path.join(".")}: ${i.message}`)
-            .join("; "),
-        });
+      return res.status(400).json({
+        error: error.issues
+          .map((i) => `${i.path.join(".")}: ${i.message}`)
+          .join("; "),
+      });
     const status = error.status || 500;
     if (status === 500) console.error(error);
-    res
-      .status(status)
-      .json({
-        error:
-          status === 500
-            ? "Something went wrong. Please retry."
-            : error.message,
-      });
+    res.status(status).json({
+      error:
+        status === 500 ? "Something went wrong. Please retry." : error.message,
+    });
   });
   return app;
 }

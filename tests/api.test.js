@@ -259,7 +259,9 @@ test("shared household acceptance workflows and authorization", async (t) => {
       },
     );
     await t.test(
-      "database and sessions survive actual server shutdown and reopen",
+      remote
+        ? "remote sessions and saved votes remain readable"
+        : "database and sessions survive actual server shutdown and reopen",
       async () => {
         if (!remote) {
           await new Promise((r) => server.close(r));

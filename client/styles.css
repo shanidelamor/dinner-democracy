@@ -2194,7 +2194,7 @@ legend {
   inset: 0;
   background:
     linear-gradient(90deg, #203923f5, #263b2866),
-    url("/images/salmon.png") center/cover;
+    url("/images/recipes/crispy-salmon.webp") center/cover;
   z-index: -1;
   opacity: 0.7;
 }
@@ -3222,7 +3222,7 @@ legend {
   .auth-photo {
     background:
       linear-gradient(90deg, #263e2dfc, #263e2d44),
-      url("/images/salmon.png") center 48% / cover;
+      url("/images/recipes/crispy-salmon.webp") center 48% / cover;
   }
   .auth-content {
     padding: 35px 25px;
@@ -3614,5 +3614,52 @@ legend {
   }
 }
 @media print {
-  .menu-food-note { display: none !important; }
+  .menu-food-note {
+    display: none !important;
+  }
+}
+
+.recipe-options-panel {
+  display: flex;
+  align-items: center;
+  gap: 20px;
+  padding: 17px;
+  background: #eef2e6;
+  border: 1px solid #dfe7d4;
+  border-radius: 7px;
+  margin: 18px 0;
+}
+.recipe-options-panel label {
+  min-width: 210px;
+  margin: 0;
+}
+.recipe-options-panel p {
+  font-size: 11px;
+  line-height: 1.7;
+  color: #7d8d6b;
+}
+.recipe-options-panel select {
+  background: #fffef9;
+}
+@media (max-width: 760px) {
+  .recipe-options-panel {
+    display: block;
+  }
+  .recipe-options-panel p {
+    margin-top: 12px;
+  }
+  .recipe-options-panel label {
+    min-width: 0;
+  }
+  .primary,
+  .secondary {
+    min-height: 44px;
+  }
+  .day-actions .icon-button {
+    width: 40px;
+    height: 40px;
+  }
+  .swipe-body > p {
+    font-size: 12px;
+  }
 }

@@ -34,6 +34,24 @@ export type Recipe = {
   notes: string;
   leftover: string;
   version: number;
+  imageAlt?: string;
+  catalogRevision?: number;
+  catalogConflicts?: string[];
+  catalogProposal?: Recipe;
+  selectedVariation?: string;
+  variationLabel?: string;
+  variations?: {
+    id: string;
+    label: string;
+    description: string;
+    cut: string;
+    vegetables: string;
+    ingredients: Ingredient[];
+    steps: string[];
+    notes: string;
+    dairy: boolean;
+    image: string;
+  }[];
 };
 export type Round = {
   id: number;
@@ -68,6 +86,7 @@ export type Day = {
   attendees: string;
   locked: number;
   leftover_of: number | null;
+  variation_id?: string | null;
   reason: string;
 };
 export type Task = {

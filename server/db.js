@@ -1,6 +1,8 @@
+import { createHash } from "node:crypto";
+import { mergeCatalogRecipe } from "./catalog-updates.js";
 import { recipes, defaultPantry, ingredientDefinitions } from "./recipes.js";
 
-export function initSchema(db) {
+export function initSchema(db, catalog = recipes) {
   db.exec(`
   CREATE TABLE IF NOT EXISTS users(id TEXT PRIMARY KEY,name TEXT NOT NULL,role TEXT NOT NULL CHECK(role IN ('admin','member')),password_hash TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS sessions(token_hash TEXT PRIMARY KEY,user_id TEXT REFERENCES users(id) ON DELETE CASCADE,expires_at INTEGER NOT NULL);
@@ -20,35 +22,118 @@ export function initSchema(db) {
   CREATE TABLE IF NOT EXISTS shopping_manual(id INTEGER PRIMARY KEY,menu_id INTEGER NOT NULL REFERENCES menus(id),name TEXT NOT NULL,quantity REAL NOT NULL,unit TEXT NOT NULL,section TEXT NOT NULL,request_id INTEGER UNIQUE REFERENCES requests(id),active INTEGER NOT NULL DEFAULT 1);
   CREATE TABLE IF NOT EXISTS shopping_state(menu_id INTEGER REFERENCES menus(id),item_key TEXT NOT NULL,checked INTEGER NOT NULL DEFAULT 0,have INTEGER NOT NULL DEFAULT 0,purchase_quantity REAL,PRIMARY KEY(menu_id,item_key));
   CREATE TABLE IF NOT EXISTS settings(key TEXT PRIMARY KEY,value TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS recipe_catalog_baselines(recipe_id TEXT PRIMARY KEY REFERENCES recipes(id),data TEXT NOT NULL);
+  CREATE TABLE IF NOT EXISTS catalog_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT DEFAULT CURRENT_TIMESTAMP);
   INSERT OR IGNORE INTO schema_migrations(version) VALUES(1);`);
-  const seeded =
-    db.prepare("SELECT count(*) n FROM recipes").get().n >= recipes.length &&
-    db.prepare("SELECT count(*) n FROM recipe_ingredients").get().n > 0;
-  if (seeded) return db;
-  const insert = db.prepare(
-    "INSERT OR IGNORE INTO recipes(id,data,version) VALUES(?,?,1)",
-  );
-  for (const [id, [name, section]] of Object.entries(ingredientDefinitions))
-    db.prepare(
-      "INSERT OR IGNORE INTO ingredient_definitions VALUES(?,?,?)",
-    ).run(id, name, section);
-  for (const r of recipes) insert.run(r.id, JSON.stringify(r));
-  for (const row of db.prepare("SELECT id,data FROM recipes").all()) {
-    if (
-      !db
-        .prepare("SELECT 1 FROM recipe_ingredients WHERE recipe_id=?")
-        .get(row.id)
-    )
-      saveIngredients(db, row.id, JSON.parse(row.data).ingredients);
-  }
-  for (const id of defaultPantry)
-    db.prepare(
-      "INSERT OR IGNORE INTO pantry(ingredient_id,have) VALUES(?,0)",
-    ).run(id);
+  const columns = db.prepare("PRAGMA table_info(menu_days)").all();
+  if (!columns.some((c) => c.name === "variation_id"))
+    db.exec("ALTER TABLE menu_days ADD COLUMN variation_id TEXT");
   db.prepare(
-    "INSERT OR IGNORE INTO settings(key,value) VALUES('tacoDay','3')",
+    "INSERT OR IGNORE INTO schema_migrations(version) VALUES(2)",
   ).run();
+  const seeded =
+    db.prepare("SELECT count(*) n FROM recipes").get().n >= catalog.length &&
+    db.prepare("SELECT count(*) n FROM recipe_ingredients").get().n > 0;
+  const digest = createHash("sha256")
+    .update(
+      JSON.stringify({
+        recipes: catalog,
+        definitions: ingredientDefinitions,
+        pantry: defaultPantry,
+      }),
+    )
+    .digest("hex");
+  if (
+    seeded &&
+    db.prepare("SELECT value FROM catalog_meta WHERE key='digest'").get()
+      ?.value === digest
+  )
+    return db;
+  const householdExists = !!db.prepare("SELECT count(*) n FROM users").get().n;
+  transaction(db, () => {
+    for (const [id, [name, section]] of Object.entries(ingredientDefinitions))
+      db.prepare(
+        "INSERT INTO ingredient_definitions VALUES(?,?,?) ON CONFLICT(id) DO UPDATE SET name=excluded.name,section=excluded.section",
+      ).run(id, name, section);
+    for (const r of catalog) {
+      const row = db
+        .prepare("SELECT data,version FROM recipes WHERE id=?")
+        .get(r.id);
+      if (!row) {
+        db.prepare("INSERT INTO recipes(id,data,version) VALUES(?,?,1)").run(
+          r.id,
+          JSON.stringify(r),
+        );
+        saveIngredients(db, r.id, r.ingredients);
+        db.prepare(
+          "INSERT OR REPLACE INTO recipe_catalog_baselines VALUES(?,?)",
+        ).run(r.id, JSON.stringify(r));
+        continue;
+      }
+      const current = JSON.parse(row.data);
+      const prior = db
+        .prepare("SELECT data FROM recipe_catalog_baselines WHERE recipe_id=?")
+        .get(r.id);
+      const baseline = prior
+        ? JSON.parse(prior.data)
+        : !householdExists &&
+            current.catalogRevision &&
+            !/edited/i.test(current.source)
+          ? current
+          : undefined;
+      const update = mergeCatalogRecipe(current, r, baseline);
+      if (update) {
+        db.prepare(
+          "INSERT INTO recipe_versions(recipe_id,version,data,edited_by) VALUES(?,?,?,NULL)",
+        ).run(r.id, row.version, row.data);
+        const next = { ...update.recipe, version: row.version + 1 };
+        db.prepare(
+          "UPDATE recipes SET data=?,version=version+1 WHERE id=?",
+        ).run(JSON.stringify(next), r.id);
+        saveIngredients(db, r.id, next.ingredients);
+        if (update.ingredientsChanged) {
+          const affected = db
+            .prepare(
+              "SELECT menu_id FROM menu_days WHERE recipe_id=? UNION SELECT menu_id FROM tasks WHERE recipe_id=?",
+            )
+            .all(r.id, r.id);
+          for (const m of affected) {
+            db.prepare("UPDATE menus SET status='draft' WHERE id=?").run(
+              m.menu_id,
+            );
+            db.prepare(
+              "DELETE FROM shopping_state WHERE menu_id=? AND item_key NOT LIKE 'manual:%'",
+            ).run(m.menu_id);
+          }
+        }
+      } else if (
+        !db
+          .prepare("SELECT 1 FROM recipe_ingredients WHERE recipe_id=?")
+          .get(r.id)
+      )
+        saveIngredients(db, r.id, JSON.parse(row.data).ingredients);
+      db.prepare(
+        "INSERT OR REPLACE INTO recipe_catalog_baselines VALUES(?,?)",
+      ).run(r.id, JSON.stringify(r));
+    }
+    for (const id of defaultPantry)
+      db.prepare(
+        "INSERT OR IGNORE INTO pantry(ingredient_id,have) VALUES(?,0)",
+      ).run(id);
+    db.prepare(
+      "INSERT OR IGNORE INTO settings(key,value) VALUES('tacoDay','3')",
+    ).run();
+    db.prepare(
+      "INSERT OR IGNORE INTO schema_migrations(version) VALUES(3)",
+    ).run();
+    db.prepare(
+      "INSERT OR IGNORE INTO schema_migrations(version) VALUES(4)",
+    ).run();
+    db.prepare(
+      "INSERT INTO catalog_meta VALUES('digest',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    ).run(digest);
+  });
   return db;
 }
 export function saveIngredients(db, id, ingredients) {
@@ -67,16 +152,43 @@ export const allRecipes = (db) => {
       "SELECT ri.recipe_id,ri.ingredient_id id,ri.quantity,ri.unit,ri.note,d.name,d.section FROM recipe_ingredients ri JOIN ingredient_definitions d ON d.id=ri.ingredient_id ORDER BY ri.position",
     )
     .all();
+  const managedPhoto = (path) =>
+    /^\/images\/(recipes\/[a-z0-9-]+\.webp|(?:salmon|chicken|beef|lamb|vegetables|pork|cookies)\.png)$/.test(
+      path || "",
+    );
   return db
     .prepare("SELECT id,data,version FROM recipes")
     .all()
-    .map((r) => ({
-      ...JSON.parse(r.data),
-      version: r.version,
-      ingredients: ingredients
-        .filter((i) => i.recipe_id === r.id)
-        .map(({ recipe_id, ...i }) => i),
-    }));
+    .map((row) => {
+      const data = JSON.parse(row.data),
+        catalog = recipes.find((r) => r.id === row.id);
+      return {
+        ...data,
+        version: row.version,
+        ...(catalog && managedPhoto(data.image)
+          ? { image: catalog.image, imageAlt: catalog.imageAlt }
+          : {}),
+        ...(data.variations
+          ? {
+              variations: data.variations.map((v) => {
+                const updated = catalog?.variations?.find(
+                  (option) => option.id === v.id,
+                );
+                return {
+                  ...v,
+                  ...(updated && managedPhoto(v.image)
+                    ? { image: updated.image }
+                    : {}),
+                };
+              }),
+            }
+          : {}),
+        ...(data.catalogConflicts?.length ? { catalogProposal: catalog } : {}),
+        ingredients: ingredients
+          .filter((i) => i.recipe_id === row.id)
+          .map(({ recipe_id, ...i }) => i),
+      };
+    });
 };
 export const transaction = (db, fn) => {
   if (db.transactionSync) return db.transactionSync(fn);

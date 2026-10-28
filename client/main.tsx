@@ -48,7 +48,14 @@ import {
   Sun,
   ClipboardList,
 } from "lucide-react";
-import { api, amount, formatQty, dayLabel, today } from "./api";
+import {
+  api,
+  amount,
+  formatQty,
+  dayLabel,
+  today,
+  resolveRecipeView,
+} from "./api";
 import type {
   AppState,
   Recipe,
@@ -103,7 +110,7 @@ const Food = ({
   <img
     className={`food-photo ${className}`}
     src={recipe.image}
-    alt={recipe.title}
+    alt={recipe.imageAlt || recipe.title}
     loading="lazy"
     onError={(e) => {
       e.currentTarget.style.opacity = "0";
@@ -465,6 +472,7 @@ function App() {
       {recipe && (
         <RecipeDetail
           recipe={data.recipes.find((r) => r.id === recipe.id) || recipe}
+          initialVariationId={recipe.selectedVariation}
           onClose={() => setRecipe(null)}
         />
       )}
@@ -2245,6 +2253,8 @@ function EditDay({
   const [kind, setKind] = useState(day.kind),
     [recipe, setRecipe] = useState(day.recipe_id || "sticky-chicken"),
     [people, setPeople] = useState<string[]>(JSON.parse(day.attendees));
+  const [variationId, setVariationId] = useState(day.variation_id || "");
+  const selectedRecipe = data.recipes.find((r) => r.id === recipe);
   const sources = menu.days.filter(
     (d) =>
       d.kind === "cook" &&
@@ -2267,6 +2277,7 @@ function EditDay({
               {
                 kind,
                 recipeId: kind === "out" ? null : recipe,
+                variationId: kind === "cook" ? variationId || null : null,
                 portions: Number(f.get("portions")),
                 attendees: people,
                 leftoverOf:
@@ -2292,7 +2303,14 @@ function EditDay({
         {kind === "cook" && (
           <label>
             Recipe
-            <select value={recipe} onChange={(e) => setRecipe(e.target.value)}>
+            <select
+              aria-label="Recipe"
+              value={recipe}
+              onChange={(e) => {
+                setRecipe(e.target.value);
+                setVariationId("");
+              }}
+            >
               {data.recipes
                 .filter(
                   (r) =>
@@ -2309,6 +2327,25 @@ function EditDay({
                   </option>
                 ))}
             </select>
+          </label>
+        )}
+        {kind === "cook" && selectedRecipe?.variations?.length && (
+          <label>
+            Recipe option
+            <select
+              aria-label="Recipe option"
+              value={variationId || selectedRecipe.variations[0].id}
+              onChange={(e) => setVariationId(e.target.value)}
+            >
+              {selectedRecipe.variations.map((v) => (
+                <option key={v.id} value={v.id}>
+                  {v.label}
+                </option>
+              ))}
+            </select>
+            <small>
+              The shopping list uses only the ingredients for this option.
+            </small>
           </label>
         )}
         {kind === "leftover" && (
@@ -2498,7 +2535,10 @@ function MenuPage() {
           </div>
           <div className="menu-days">
             {menu.days.map((d, i) => {
-              const r = data.recipes.find((r) => r.id === d.recipe_id),
+              const r = resolveRecipeView(
+                  data.recipes.find((r) => r.id === d.recipe_id),
+                  d.variation_id,
+                ),
                 source = menu.days.find((x) => x.id === d.leftover_of),
                 reserved = menu.days
                   .filter((x) => x.leftover_of === d.id)
@@ -2526,6 +2566,11 @@ function MenuPage() {
                       >
                         {d.kind === "out" ? "Taco night out" : r?.title}
                       </button>
+                      {(r?.variationLabel || r?.variations?.[0]?.label) && (
+                        <Badge tone="cream">
+                          {r?.variationLabel || r?.variations?.[0]?.label}
+                        </Badge>
+                      )}
                       {d.kind === "leftover" && (
                         <Badge tone="green">Planned leftovers</Badge>
                       )}
@@ -3244,13 +3289,17 @@ function SettingsPage() {
   );
 }
 function RecipeDetail({
-  recipe: r,
+  recipe: baseRecipe,
+  initialVariationId,
   onClose,
 }: {
   recipe: Recipe;
+  initialVariationId?: string;
   onClose: () => void;
 }) {
   const { admin, data, act, busy, notify } = useApp();
+  const [variationId, setVariationId] = useState(initialVariationId || "");
+  const r = resolveRecipeView(baseRecipe, variationId)!;
   const [servings, setServings] = useState(r.servings),
     [cooking, setCooking] = useState(false),
     [checked, setChecked] = useState<number[]>([]),
@@ -3292,7 +3341,11 @@ function RecipeDetail({
         "PATCH",
         {
           title: f.get("title"),
-          protein: f.get("protein"), cut: f.get("cut"), vegetables: f.get("vegetables"), prep: Number(f.get("prep")), cook: Number(f.get("cook")),
+          protein: f.get("protein"),
+          cut: f.get("cut"),
+          vegetables: f.get("vegetables"),
+          prep: Number(f.get("prep")),
+          cook: Number(f.get("cook")),
           description: f.get("description"),
           notes: f.get("notes"),
           steps: String(f.get("steps"))
@@ -3347,9 +3400,69 @@ function RecipeDetail({
                 defaultValue={r.description}
               />
             </label>
-            <div className="form-row"><label>Protein type<select name="protein" defaultValue={r.protein}>{['Chicken','Beef','Pork','Lamb','Fish','Shrimp','Turkey & beef','Vegetarian'].map(p=><option key={p}>{p}</option>)}</select></label><label>Exact cut<input name="cut" required minLength={5} maxLength={250} defaultValue={r.cut}/></label></div>
-            <label>Vegetables / explicit side<input name="vegetables" required minLength={3} maxLength={250} defaultValue={r.vegetables}/></label>
-            <div className="form-row"><label>Prep minutes<input name="prep" type="number" required min="0" max="1440" defaultValue={r.prep}/></label><label>Cooking minutes<input name="cook" type="number" required min="0" max="1440" defaultValue={r.cook}/></label></div>
+            <div className="form-row">
+              <label>
+                Protein type
+                <select name="protein" defaultValue={r.protein}>
+                  {[
+                    "Chicken",
+                    "Beef",
+                    "Pork",
+                    "Lamb",
+                    "Fish",
+                    "Shrimp",
+                    "Turkey & beef",
+                    "Vegetarian",
+                  ].map((p) => (
+                    <option key={p}>{p}</option>
+                  ))}
+                </select>
+              </label>
+              <label>
+                Exact cut
+                <input
+                  name="cut"
+                  required
+                  minLength={5}
+                  maxLength={250}
+                  defaultValue={r.cut}
+                />
+              </label>
+            </div>
+            <label>
+              Vegetables / explicit side
+              <input
+                name="vegetables"
+                required
+                minLength={3}
+                maxLength={250}
+                defaultValue={r.vegetables}
+              />
+            </label>
+            <div className="form-row">
+              <label>
+                Prep minutes
+                <input
+                  name="prep"
+                  type="number"
+                  required
+                  min="0"
+                  max="1440"
+                  defaultValue={r.prep}
+                />
+              </label>
+              <label>
+                Cooking minutes
+                <input
+                  name="cook"
+                  type="number"
+                  required
+                  min="0"
+                  max="1440"
+                  defaultValue={r.cook}
+                />
+              </label>
+            </div>
             <div className="form-row">
               <label>
                 Base generous servings
@@ -3483,6 +3596,60 @@ function RecipeDetail({
                 </div>
               </>
             )}
+            {r.variations?.length && (
+              <div className="recipe-options-panel">
+                <label>
+                  Recipe option
+                  <select
+                    aria-label="Recipe option"
+                    value={variationId || r.variations[0].id}
+                    onChange={(e) => {
+                      setVariationId(e.target.value);
+                      setChecked([]);
+                    }}
+                  >
+                    {r.variations.map((v) => (
+                      <option key={v.id} value={v.id}>
+                        {v.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <p>
+                  Preview the ingredients and method here. Choose the same
+                  option on your weekly menu to use it for shopping.
+                </p>
+              </div>
+            )}
+            {!!r.catalogConflicts?.length && (
+              <div className="notice">
+                <div>
+                  <strong>Your personal edits were kept.</strong>
+                  <p>
+                    The reviewed library update also changed:{" "}
+                    {r.catalogConflicts.join(", ")}. You can edit these yourself
+                    or apply the reviewed fields below; your previous version
+                    stays in history.
+                  </p>
+                  {admin && (
+                    <button
+                      className="secondary"
+                      disabled={busy}
+                      onClick={() =>
+                        act(
+                          `/recipes/${r.id}/catalog-review`,
+                          "POST",
+                          {},
+                          "Reviewed fields applied; check and approve affected menus",
+                        ).catch(() => {})
+                      }
+                    >
+                      Use reviewed changes
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
             <div className="detail-controls">
               <div className="servings-control">
                 <span>
@@ -3524,7 +3691,8 @@ function RecipeDetail({
                   <button
                     className="secondary"
                     onClick={() => {
-                      setIngredients(r.ingredients);
+                      setVariationId("");
+                      setIngredients(baseRecipe.ingredients);
                       setEdit(true);
                     }}
                   >
@@ -3642,8 +3810,9 @@ function RecipeDetail({
                     <ul>
                       {history.map((v) => (
                         <li key={v.version}>
-                          Version {v.version} saved before edit by {v.edited_by}{" "}
-                          · {v.created_at}
+                          Version {v.version} saved before edit by{" "}
+                          {v.edited_by || "Recipe library update"} ·{" "}
+                          {v.created_at}
                         </li>
                       ))}
                     </ul>
