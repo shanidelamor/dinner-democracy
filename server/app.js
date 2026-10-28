@@ -1,3 +1,4 @@
+import { candidatePool, localDate, seasonFor, cookedWindow, votingDone } from "./voting.js";
 import { resolveRecipe } from "./recipe-options.js";
 import express from "express";
 import helmet from "helmet";
@@ -13,6 +14,7 @@ import { resolve } from "node:path";
 import { existsSync } from "node:fs";
 import { allRecipes, transaction, saveIngredients } from "./db.js";
 import {
+  datePlus,
   generateDays,
   shoppingList,
   validateMenu,
@@ -195,13 +197,7 @@ export function createApp(
       const r = db
         .prepare("INSERT INTO rounds(title) VALUES('Our first dinner vote')")
         .run();
-      for (const recipe of allRecipes(db).filter(
-        (r) => r.category === "Dinner" && !r.archived,
-      ))
-        db.prepare("INSERT INTO round_recipes VALUES(?,?)").run(
-          r.lastInsertRowid,
-          recipe.id,
-        );
+      fillRound(Number(r.lastInsertRowid));
     });
     setSession("shani", res);
     res.json({ ok: true });
@@ -287,7 +283,7 @@ export function createApp(
         name: ingredientDefinitions[p.ingredient_id]?.[0] || p.ingredient_id,
       }));
     const manual = db
-      .prepare("SELECT * FROM shopping_manual WHERE active=1")
+      .prepare("SELECT sm.*,si.ingredient_id FROM shopping_manual sm LEFT JOIN shopping_identity si ON si.manual_id=sm.id WHERE active=1")
       .all();
     const rr = allRecipes(db);
     const lists = {};
@@ -299,6 +295,8 @@ export function createApp(
         recipes: rr,
         manual,
         pantry,
+        inventory: db.prepare("SELECT * FROM pantry_inventory").all(),
+        purchaseRules: db.prepare("SELECT * FROM purchase_rules").all(),
         states: db
           .prepare("SELECT * FROM shopping_state WHERE menu_id=?")
           .all(m.id),
@@ -315,14 +313,17 @@ export function createApp(
         .all()
         .map((r) => ({
           ...r,
+          ...db.prepare("SELECT local_date,season,seasonal_weight FROM round_context WHERE round_id=?").get(r.id),
+          finishedUsers: db.prepare("SELECT user_id FROM voter_progress WHERE round_id=? AND finished=1").all(r.id).map(x=>x.user_id),
           recipeIds: db
-            .prepare("SELECT recipe_id FROM round_recipes WHERE round_id=?")
+            .prepare("SELECT rr.recipe_id FROM round_recipes rr LEFT JOIN round_candidate_order co ON co.round_id=rr.round_id AND co.recipe_id=rr.recipe_id WHERE rr.round_id=? ORDER BY co.position,rr.recipe_id")
             .all(r.id)
             .map((x) => x.recipe_id),
         })),
       votes: isAdmin
         ? db.prepare("SELECT * FROM votes").all()
         : db.prepare("SELECT * FROM votes WHERE user_id=?").all(req.user.id),
+      cookedMeals: db.prepare("SELECT * FROM cooked_meals").all(),
       favorites: db
         .prepare("SELECT recipe_id FROM favorites WHERE user_id=?")
         .all(req.user.id)
@@ -340,6 +341,28 @@ export function createApp(
       ),
     });
   });
+  function fillRound(id) {
+    const date = localDate(), weight = JSON.parse(db.prepare("SELECT value FROM settings WHERE key='seasonalWeight'").get().value);
+    db.prepare("INSERT INTO round_context VALUES(?,?,?,?)").run(id,date,seasonFor(date),weight);
+    let position=0;
+    for (const r of candidatePool(allRecipes(db),db.prepare("SELECT * FROM cooked_meals").all(),date,weight)) {
+      db.prepare("INSERT INTO round_recipes VALUES(?,?)").run(id,r.id);
+      db.prepare("INSERT INTO round_candidate_order VALUES(?,?,?)").run(id,r.id,position++);
+    }
+  }
+  app.post("/api/rounds/:id/finish", (req,res) => {
+    if (!db.prepare("SELECT 1 FROM rounds WHERE id=? AND status='open'").get(req.params.id)) fail("Round is closed");
+    db.prepare("INSERT INTO voter_progress VALUES(?,?,1) ON CONFLICT(round_id,user_id) DO UPDATE SET finished=1").run(req.params.id,req.user.id);
+    res.json({ok:true});
+  });
+  app.post("/api/menu-days/:id/cooked", admin, (req,res) => {
+    const day=db.prepare("SELECT * FROM menu_days WHERE id=?").get(req.params.id);
+    if (!day?.recipe_id || day.kind==='out') fail("Choose a dinner first");
+    const b=parse(z.object({date:date.optional(),diners:quantity.optional()}),req);
+    if ((b.date||localDate())>localDate()) fail("Cooked date cannot be in the future");
+    db.prepare("INSERT INTO cooked_meals(recipe_id,cooked_date,diners,meal_plan_id,menu_day_id) VALUES(?,?,?,?,?) ON CONFLICT(menu_day_id) DO UPDATE SET recipe_id=excluded.recipe_id,cooked_date=excluded.cooked_date,diners=excluded.diners").run(day.recipe_id,b.date||localDate(),b.diners||JSON.parse(day.attendees).length,day.menu_id,day.id);
+    res.json({ok:true});
+  });
   app.post("/api/rounds", admin, (req, res) => {
     const b = parse(
       z.object({ title: z.string().trim().min(1).max(120) }),
@@ -350,13 +373,7 @@ export function createApp(
       const result = db
         .prepare("INSERT INTO rounds(title) VALUES(?)")
         .run(b.title);
-      for (const r of allRecipes(db).filter(
-        (r) => r.category === "Dinner" && !r.archived,
-      ))
-        db.prepare("INSERT INTO round_recipes VALUES(?,?)").run(
-          result.lastInsertRowid,
-          r.id,
-        );
+      fillRound(Number(result.lastInsertRowid));
       return Number(result.lastInsertRowid);
     });
     res.json({ id });
@@ -398,6 +415,9 @@ export function createApp(
         .get(b.roundId, b.recipeId)
     )
       fail("Recipe is not in this round.");
+    const own=db.prepare("SELECT * FROM votes WHERE round_id=? AND user_id=?").all(b.roundId,req.user.id);
+    if (b.choice!==null && !own.some(v=>v.recipe_id===b.recipeId) && votingDone(own,Infinity,!!db.prepare("SELECT 1 FROM voter_progress WHERE round_id=? AND user_id=? AND finished=1").get(b.roundId,req.user.id))) fail("Voting is complete. Undo an existing vote to continue.");
+    db.prepare("DELETE FROM voter_progress WHERE round_id=? AND user_id=?").run(b.roundId,req.user.id);
     if (b.choice === null)
       db.prepare(
         "DELETE FROM votes WHERE round_id=? AND user_id=? AND recipe_id=?",
@@ -441,6 +461,8 @@ export function createApp(
       "pkg",
       "box",
     ]),
+    form: z.string().trim().min(1).max(100).optional(),
+    substitutions: z.array(z.string().max(120)).max(10).optional(),
     note: z.string().max(500).optional(),
   });
   app.post("/api/recipes", admin, (req, res) => {
@@ -646,6 +668,8 @@ export function createApp(
                 "pkg",
                 "box",
               ]),
+              form: z.string().trim().min(1).max(100).optional(),
+              substitutions: z.array(z.string().max(120)).max(10).optional(),
               note: z.string().max(500).optional(),
             }),
           )
@@ -830,6 +854,7 @@ export function createApp(
       "ml",
     ]),
     section: z.enum(sections),
+    ingredientId: z.string().nullable().optional(),
     requestId: z.number().int().positive().nullable().optional(),
   });
   app.post("/api/shopping/manual", admin, (req, res) => {
@@ -851,6 +876,9 @@ export function createApp(
     db.prepare(
       "INSERT INTO shopping_manual(menu_id,name,quantity,unit,section,request_id) VALUES(?,?,?,?,?,?) ON CONFLICT(request_id) DO UPDATE SET menu_id=excluded.menu_id,name=excluded.name,quantity=excluded.quantity,unit=excluded.unit,section=excluded.section,active=1",
     ).run(b.menuId, b.name, b.quantity, b.unit, b.section, b.requestId || null);
+    const manualId=b.requestId ? db.prepare("SELECT id FROM shopping_manual WHERE request_id=?").get(b.requestId).id : db.prepare("SELECT last_insert_rowid() id").get().id;
+    db.prepare("DELETE FROM shopping_identity WHERE manual_id=?").run(manualId);
+    if(b.ingredientId) db.prepare("INSERT INTO shopping_identity VALUES(?,?)").run(manualId,b.ingredientId);
     if (b.requestId) {
       const item = db
         .prepare("SELECT id FROM shopping_manual WHERE request_id=?")
@@ -879,6 +907,8 @@ export function createApp(
       .transform((a) => [...new Set(a)]),
     portions: quantity,
     leftovers: z.boolean(),
+    provisional: z.boolean().default(false),
+    schedule: z.array(z.object({offset:z.number().int().min(0).max(13),home:z.boolean(),attendees:z.array(ids).min(1),portions:quantity})).max(14).optional(),
   });
   const saveDays = (menuId, rows, old = []) => {
     for (const d of rows) {
@@ -886,7 +916,7 @@ export function createApp(
       if (prev) {
         if (!d.locked)
           db.prepare(
-            "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,leftover_of=NULL,variation_id=NULL,reason=? WHERE id=?",
+            "UPDATE menu_days SET recipe_id=?,kind=?,portions=?,attendees=?,leftover_of=NULL,variation_id=NULL,leftover_recipe_id=NULL,reason=? WHERE id=?",
           ).run(
             d.recipe_id,
             d.kind,
@@ -922,16 +952,17 @@ export function createApp(
     const b = parse(genSchema, req);
     if (!db.prepare("SELECT 1 FROM rounds WHERE id=?").get(b.roundId))
       fail("Voting round not found.");
-    const recent = db
-      .prepare(
-        "SELECT md.recipe_id FROM menu_days md JOIN menus m ON m.id=md.menu_id WHERE m.status='approved' ORDER BY md.date DESC LIMIT 28",
-      )
-      .all()
-      .map((r) => r.recipe_id);
+    const pool=db.prepare("SELECT recipe_id FROM round_recipes WHERE round_id=?").all(b.roundId);
+    const incomplete=db.prepare("SELECT id FROM users").all().filter(u=>!votingDone(db.prepare("SELECT * FROM votes WHERE round_id=? AND user_id=?").all(b.roundId,u.id),pool.length,!!db.prepare("SELECT 1 FROM voter_progress WHERE round_id=? AND user_id=? AND finished=1").get(b.roundId,u.id)));
+    if(incomplete.length&&!b.provisional) fail("Voting is incomplete. Wait or explicitly select a provisional plan.");
+    const window=cookedWindow(db.prepare("SELECT * FROM cooked_meals").all(),localDate());
+    const recent=[...window.recent];
     const rows = generateDays({
-      recipes: allRecipes(db),
+      recipes: allRecipes(db).filter(r=>!window.excluded.has(r.id)),
+      season: db.prepare("SELECT season FROM round_context WHERE round_id=?").get(b.roundId)?.season,
       votes: db.prepare("SELECT * FROM votes").all(),
       ...b,
+      existing: (b.schedule||[]).map(d=>({date:datePlus(b.startDate,d.offset),kind:d.home?'cook':'out',attendees:JSON.stringify(d.attendees),portions:d.portions})),
       tacoDay: JSON.parse(
         db.prepare("SELECT value FROM settings WHERE key='tacoDay'").get()
           .value,
@@ -953,8 +984,11 @@ export function createApp(
     const m = getMenu(req.params.id);
     transaction(db, () => {
       const existing = dayRows(m.id);
+      const window=cookedWindow(db.prepare("SELECT * FROM cooked_meals").all(),localDate());
       const rows = generateDays({
-        recipes: allRecipes(db),
+        recipes: allRecipes(db).filter(r=>!window.excluded.has(r.id)),
+        recent: [...window.recent],
+        season: db.prepare("SELECT season FROM round_context WHERE round_id=?").get(m.round_id)?.season,
         votes: db.prepare("SELECT * FROM votes").all(),
         roundId: m.round_id,
         startDate: m.start_date,
@@ -988,6 +1022,7 @@ export function createApp(
           .transform((a) => [...new Set(a)])
           .optional(),
         locked: z.boolean().optional(),
+        leftoverRecipeId: z.enum(["brisket-tacos","brisket-bowls"]).nullable().optional(),
         leftoverOf: z.number().int().positive().nullable().optional(),
       }),
       req,
@@ -1035,6 +1070,7 @@ export function createApp(
         "Adjusted by Shani",
         d.id,
       );
+      db.prepare("UPDATE menu_days SET leftover_recipe_id=? WHERE id=?").run(kind==='leftover' ? (b.leftoverRecipeId===undefined?d.leftover_recipe_id:b.leftoverRecipeId)||null : null,d.id);
       if (kind === "leftover" && b.locked)
         db.prepare("UPDATE menu_days SET locked=1 WHERE id=?").run(source);
       if (
@@ -1106,7 +1142,8 @@ export function createApp(
         recipeId: z.string(),
         date,
         portions: quantity,
-        requestId: z.number().int().positive().nullable().optional(),
+        ingredientId: z.string().nullable().optional(),
+    requestId: z.number().int().positive().nullable().optional(),
       }),
       req,
     );
@@ -1181,7 +1218,7 @@ export function createApp(
       days: dayRows(m.id),
       tasks: db.prepare("SELECT * FROM tasks WHERE menu_id=?").all(m.id),
       recipes: allRecipes(db),
-      manual: db.prepare("SELECT * FROM shopping_manual WHERE active=1").all(),
+      manual: db.prepare("SELECT sm.*,si.ingredient_id FROM shopping_manual sm LEFT JOIN shopping_identity si ON si.manual_id=sm.id WHERE active=1").all(),
     }).some((x) => x.key === b.key);
     if (!valid) fail("Shopping item is not in this menu.");
     const old = db
@@ -1199,6 +1236,18 @@ export function createApp(
         : (old?.purchase_quantity ?? null),
     );
     res.json({ ok: true });
+  });
+  app.put("/api/seasonal-weight", admin, (req,res)=>{
+    const b=parse(z.object({weight:z.number().min(0).max(1)}),req);
+    db.prepare("UPDATE settings SET value=? WHERE key='seasonalWeight'").run(JSON.stringify(b.weight));res.json({ok:true});
+  });
+  app.put("/api/purchase-rules/:id", admin, (req,res)=>{
+    const b=parse(z.object({unit:z.string().min(1),packageSize:quantity}),req);
+    db.prepare("INSERT INTO purchase_rules VALUES(?,?,?) ON CONFLICT(ingredient_id) DO UPDATE SET unit=excluded.unit,package_size=excluded.package_size").run(req.params.id,b.unit,b.packageSize);res.json({ok:true});
+  });
+  app.put("/api/pantry-inventory/:id", admin, (req,res)=>{
+    const b=parse(z.object({unit:z.string().min(1),quantity:z.number().min(0)}),req);
+    db.prepare("INSERT INTO pantry_inventory VALUES(?,?,?) ON CONFLICT(ingredient_id) DO UPDATE SET quantity=excluded.quantity,unit=excluded.unit").run(req.params.id,b.quantity,b.unit);res.json({ok:true});
   });
   app.patch("/api/settings", admin, (req, res) => {
     const b = parse(

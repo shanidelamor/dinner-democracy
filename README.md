@@ -41,6 +41,10 @@ Production requires HTTPS, `NODE_ENV=production`, and a private `SETUP_KEY` for 
 - Full recipe details, serving scaling, cooking mode with checkable steps, supported-browser wake lock, editable ingredients/steps/notes, version history, new family recipes and archival. Recipe changes return related menus to draft for review.
 - Mobile/desktop layouts, locally served fonts and 51 dish-specific WebP illustrations, plus four option-specific images, print styles for the fridge menu and grocery list.
 
+## Smart planning update
+
+See [smart planning changes, migration 5, validation and deployment](docs/SMART-PLANNING-UPDATE.md). New rounds now use seasonal candidates, actual cooked history and ten-YES voting. Grocery calculations support confirmed inventory quantities and package rules.
+
 ## Recipe provenance
 
 Earlier 🥑 Dinner Menu Rotation conversations were **not accessible**. Inventory facts are preserved; exact missing quantities/methods are **proposed reconstructions**, not recovered originals. Only Crispy Salmon Rice Bowls and Harissa Shaved Lamb are seeded as confirmed favorites/made before. The 10 fall recipes are never tried. Other prior-cooking status is unconfirmed. The salmon broiler timing and extremely spicy harissa caution are preserved. Cookies are a proposed GF/egg-free reconstruction, with brown butter, milk powder, white miso, espresso and optional toffee. Food photography is generated illustration, not a photo of a previously cooked household dish.

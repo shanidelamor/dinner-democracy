@@ -6,6 +6,8 @@ export type Ingredient = {
   unit: string;
   section: string;
   note?: string;
+  form?: string;
+  substitutions?: string[];
 };
 export type Recipe = {
   id: string;
@@ -58,6 +60,8 @@ export type Round = {
   title: string;
   status: string;
   created_at: string;
+  season?: string;
+  finishedUsers?: string[];
   recipeIds: string[];
 };
 export type Vote = {
@@ -86,6 +90,7 @@ export type Day = {
   attendees: string;
   locked: number;
   leftover_of: number | null;
+  leftover_recipe_id?: string | null;
   variation_id?: string | null;
   reason: string;
 };
@@ -117,9 +122,11 @@ export type ShoppingItem = {
   have: boolean;
   pantry: boolean;
   purchaseQuantity: number | null;
+  packageCount?: number | null;
   optional?: boolean;
 };
 export type AppState = {
+  cookedMeals: {menu_day_id:number; cooked_date:string}[];
   user: User;
   ingredientCatalog: { id: string; name: string; section: string }[];
   users: User[];
@@ -139,5 +146,5 @@ export type AppState = {
   }[];
   shoppingLists: Record<number, ShoppingItem[]>;
   pantry: { ingredient_id: string; have: number; name: string }[];
-  settings: { tacoDay: number };
+  settings: { tacoDay: number; seasonalWeight?: number };
 };

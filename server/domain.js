@@ -81,6 +81,7 @@ export function generateDays({
   portions = 3,
   recent = [],
   leftovers = true,
+  season,
 }) {
   const result = [];
   const used = new Map();
@@ -104,7 +105,7 @@ export function generateDays({
       portions: qty,
       locked: 0,
     };
-    if (new Date(`${date}T12:00:00Z`).getUTCDay() === tacoDay) {
+    if (old?.kind === "out" || new Date(`${date}T12:00:00Z`).getUTCDay() === tacoDay) {
       result.push({
         ...base,
         kind: "out",
@@ -143,28 +144,26 @@ export function generateDays({
         (r) =>
           r.category === "Dinner" &&
           !r.archived &&
-          r.ingredients.length &&
+          r.ingredients.length && r.vegetables && (r.protein !== "Chicken" || r.cut) &&
           safeFor(r, people),
       )
       .map((r) => {
         const rv = votes.filter(
           (v) =>
             v.recipe_id === r.id &&
-            v.round_id === roundId &&
-            people.includes(v.user_id),
+            v.round_id === roundId,
         );
         const yes = rv.filter((v) => v.choice === "yes").length,
           maybe = rv.filter((v) => v.choice === "maybe").length,
           no = rv.filter((v) => v.choice === "no").length;
         const score =
-          yes * 100 +
-          maybe * 8 -
-          no * 35 -
+          (yes === 3 ? 1000 : 0) + yes * 30 +
+          maybe * 10 + (r.seasons?.includes(season) ? 5 : 0) -
           (used.get(r.id) || 0) * 1000 -
           (recent.includes(r.id) ? 45 : 0) -
           (previous?.protein === r.protein ? 50 : 0) -
           (previous?.cuisine === r.cuisine ? 45 : 0) +
-          (r.favorite ? 4 : 0);
+          (r.favorite ? 4 : 0) - (new Date(date+"T12:00:00Z").getUTCDay()%6 ? (r.prep+r.cook)/30 : 0);
         return { r, score, yes, maybe, no };
       })
       .sort((a, b) => b.score - a.score || a.r.id.localeCompare(b.r.id));
@@ -175,7 +174,7 @@ export function generateDays({
       kind: "cook",
       recipe_id: pick.r.id,
       leftover_of: null,
-      reason: `${pick.yes} YES, ${pick.maybe} MAYBE, ${pick.no} NO from attending diners. Unvoted diners are unvoted. Balances protein/cuisine and avoids recent menus.${people.includes("james") ? " Seafood excluded for James." : ""}`,
+      reason: `${pick.yes} YES, ${pick.maybe} MAYBE, ${pick.no} NO from family votes. Unvoted diners are unvoted. Balances protein/cuisine and avoids recent menus.${people.includes("james") ? " Seafood excluded for James." : ""}`,
     });
     used.set(pick.r.id, (used.get(pick.r.id) || 0) + 1);
     previous = pick.r;
@@ -190,24 +189,27 @@ export function shoppingList({
   manual = [],
   pantry = [],
   states = [],
+  inventory = [],
+  purchaseRules = [],
 }) {
   if (!menu || menu.status !== "approved") return [];
   const list = new Map(),
     have = new Set(pantry.filter((p) => p.have).map((p) => p.ingredient_id));
-  const addRecipe = (id, portions, label, variationId) => {
+  const addRecipe = (id, portions, label, variationId, omit = []) => {
     const r = resolveRecipe(
       recipes.find((r) => r.id === id),
       variationId,
     );
     if (!r) throw invalid("Planned recipe is missing");
-    for (const ing of r.ingredients) {
+    for (const ing of r.ingredients.filter(i=>!omit.includes(i.id))) {
       const [dimension, factor] = unitTable[ing.unit] || [ing.unit, 1],
-        key = `${ing.id}:${dimension}`;
+        key = `${ing.id}:${dimension}${ing.form && ing.form!=="as_purchased" ? ":"+ing.form : ""}`;
       if (!list.has(key))
         list.set(key, {
           key,
           name: ing.name,
           ingredientId: ing.id,
+          form: ing.form||"as_purchased",
           quantity: 0,
           unit:
             dimension === "weight"
@@ -229,11 +231,16 @@ export function shoppingList({
     const total =
       day.portions +
       days
-        .filter((d) => d.kind === "leftover" && d.leftover_of === day.id)
+        .filter((d) => d.kind === "leftover" && d.leftover_of === day.id && !d.leftover_recipe_id)
         .reduce((sum, d) => sum + d.portions, 0);
+    // Transformation needs cooked brisket: 2/3 cooking yield, 1 lb cooked per three diners.
+    const transformations=days.filter(d=>d.kind==='leftover'&&d.leftover_of===day.id&&d.leftover_recipe_id);
+    const extraRaw=transformations.reduce((sum,d)=>sum+(d.portions/3)/(2/3),0);
+    const source=recipes.find(r=>r.id===day.recipe_id);
+    const rawPerServing=source?.ingredients.find(i=>i.id==='brisket'&&i.unit==='lb')?.quantity/source?.servings;
     addRecipe(
       day.recipe_id,
-      total,
+      total+(extraRaw ? extraRaw/rawPerServing : 0),
       `${day.date} · ${recipes.find((r) => r.id === day.recipe_id)?.title}${total > day.portions ? " (includes reserved leftovers)" : ""}${
         day.variation_id
           ? ` · ${
@@ -247,28 +254,52 @@ export function shoppingList({
       day.variation_id,
     );
   }
+  for(const d of days.filter(d=>d.kind==='leftover'&&d.leftover_recipe_id))
+    addRecipe(d.leftover_recipe_id,d.portions,`${d.date} · leftover transformation`,null,['cookedBrisket']);
   for (const task of tasks)
     addRecipe(task.recipe_id, task.portions, `${task.date} · extra / baking`);
   // Free-text requests stay separate until Shani explicitly decides their quantities.
-  for (const m of manual.filter((m) => m.active && m.menu_id === menu.id))
-    list.set(`manual:${m.id}`, {
-      key: `manual:${m.id}`,
+  for (const m of manual.filter((m) => m.active && m.menu_id === menu.id)) {
+    const [dimension,factor]=unitTable[m.unit]||[m.unit,1];
+    const key=m.ingredient_id ? `${m.ingredient_id}:${dimension}` : `manual:${m.id}`;
+    if(m.ingredient_id && list.has(key)) {
+      const item=list.get(key);item.quantity+=m.quantity*factor;item.requestedQuantity=(item.requestedQuantity||0)+m.quantity*factor;item.sources.push('Approved family request');continue;
+    }
+    list.set(key, {
+      key,
+      ...(m.ingredient_id?{ingredientId:m.ingredient_id}:{}),
       name: m.name,
-      quantity: m.quantity,
-      unit: m.unit,
+      requestedQuantity: m.ingredient_id ? m.quantity*factor : m.quantity,
+      quantity: m.ingredient_id ? m.quantity*factor : m.quantity,
+      unit: m.ingredient_id ? (dimension==="weight"?"oz":dimension==="volume"?"ml":m.unit) : m.unit,
       section: m.section,
       sources: [m.request_id ? "Approved family request" : "Added by Shani"],
       pantry: false,
     });
+  }
   return [...list.values()]
     .map((item) => {
       const state = states.find((s) => s.item_key === item.key);
+      const stock=inventory.find(p=>p.ingredient_id===item.ingredientId && (!item.form || item.form==="as_purchased"));
+      const convert=(qty,from,to)=>{
+        const a=unitTable[from]||[from,1],b=unitTable[to]||[to,1];
+        return a[0]===b[0]?qty*a[1]/b[1]:null;
+      };
+      const available=stock ? convert(stock.quantity,stock.unit,item.unit) : 0;
+      const required=Math.max(item.requestedQuantity||0,item.quantity-(available||0));
+      const rule=purchaseRules.find(p=>p.ingredient_id===item.ingredientId);
+      const packageSize=rule ? convert(rule.package_size,rule.unit,item.unit):null;
+      const purchase=item.key.startsWith("manual:") ? item.quantity : packageSize ? Math.ceil((required-1e-9)/packageSize)*packageSize : ['each','can','box','pkg'].includes(item.unit)?Math.ceil(required-1e-9):required;
+
       return {
         ...item,
         quantity: Math.round(item.quantity * 1000) / 1000,
         checked: !!state?.checked,
         have: !!state?.have || item.pantry,
-        purchaseQuantity: state?.purchase_quantity ?? null,
+        requiredQuantity: required,
+        packageSizeConfirmed: !!packageSize,
+        packageCount: packageSize ? Math.ceil((state?.purchase_quantity ?? purchase)/packageSize) : null,
+        purchaseQuantity: state?.purchase_quantity ?? purchase,
       };
     })
     .sort(
@@ -286,10 +317,15 @@ export function validateMenu(days, recipes) {
     );
     if (!r || r.archived || r.category !== "Dinner" || !r.ingredients.length)
       throw invalid("Choose a complete active dinner recipe.");
+    if (!r.vegetables || (r.protein === "Chicken" && !r.cut)) throw invalid("Dinner needs vegetables and an exact chicken cut.");
     if (!safeFor(r, JSON.parse(d.attendees)))
       throw invalid(
         "James is attending; choose a dinner without seafood or asparagus.",
       );
+    if (d.leftover_recipe_id) {
+      const transformation=recipes.find(r=>r.id===d.leftover_recipe_id);
+      if(d.kind!=='leftover'||d.recipe_id!=='brisket'||!['brisket-tacos','brisket-bowls'].includes(d.leftover_recipe_id)||!transformation?.vegetables||!safeFor(transformation,JSON.parse(d.attendees))) throw invalid('Choose a compatible brisket leftover transformation');
+    }
     if (d.kind === "leftover") {
       const source = days.find((s) => s.id === d.leftover_of);
       if (

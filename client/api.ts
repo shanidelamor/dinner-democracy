@@ -20,7 +20,10 @@ export async function api<T = any>(
 }
 export const formatQty = (n: number) => {
   const rounded = Math.round(n * 100) / 100;
-  return Number.isInteger(rounded) ? String(rounded) : String(rounded);
+  const whole=Math.floor(rounded),part=rounded-whole;
+  const fractions:[[number,string],[number,string],[number,string],[number,string],[number,string]]=[[.25,'¼'],[.5,'½'],[.75,'¾'],[1/3,'⅓'],[2/3,'⅔']];
+  const fraction=fractions.find(([value])=>Math.abs(value-part)<.006);
+  return fraction ? `${whole||''}${whole?' ':''}${fraction[1]}` : String(rounded);
 };
 export function amount(n: number, unit: string) {
   if (unit === "oz" && n >= 16) return `${formatQty(n / 16)} lb`;

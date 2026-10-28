@@ -105,6 +105,7 @@ test("shared household acceptance workflows and authorization", async (t) => {
             attendees: ["shani", "james", "xander"],
             portions: 3,
             leftovers: false,
+            provisional: true,
           })
         ).id;
         let state = await send("shani", "/state");
@@ -305,6 +306,7 @@ test("shared household acceptance workflows and authorization", async (t) => {
             attendees: ["shani"],
             portions: 3,
             leftovers: false,
+            provisional: true,
           },
           400,
         );
@@ -389,7 +391,7 @@ test("shared household acceptance workflows and authorization", async (t) => {
         assert.equal(
           updated.shoppingLists[menuId].find((i) => i.ingredientId === "thigh")
             .purchaseQuantity,
-          null,
+          updated.shoppingLists[menuId].find(i=>i.ingredientId==="thigh").quantity,
         );
         assert.equal(
           updated.shoppingLists[menuId].find((i) => i.name === "Soda").checked,
@@ -472,6 +474,7 @@ test("shared household acceptance workflows and authorization", async (t) => {
           attendees: ["shani", "james", "xander"],
           portions: 3,
           leftovers: true,
+          provisional: true,
         });
         const plan = (await send("shani", "/state")).menus.find(
           (x) => x.id === m.id,

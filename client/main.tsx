@@ -936,15 +936,18 @@ function VotePage() {
       v.user_id === data.user.id &&
       round?.recipeIds.includes(v.recipe_id),
   );
-  const all = data.recipes.filter((r) => round?.recipeIds.includes(r.id));
+  const all = (round?.recipeIds || []).map(id=>data.recipes.find(r=>r.id===id)).filter((r): r is Recipe=>!!r);
+  const yesCount=mine.filter(v=>v.choice==='yes').length;
+  const done=yesCount>=10 || !!round?.finishedUsers?.includes(data.user.id);
   const pool = review
-    ? all
+    ? all.filter(r=>mine.some(v=>v.recipe_id===r.id))
     : all.filter((r) => !mine.some((v) => v.recipe_id === r.id));
   const deck = [
     ...pool.filter((r) => !skips.includes(r.id)),
     ...pool.filter((r) => skips.includes(r.id)),
   ];
-  const card = deck[review ? index % Math.max(1, deck.length) : 0];
+  const batch=deck.slice(0,10);
+  const card = done && !review ? undefined : review ? deck[index % Math.max(1,deck.length)] : batch[0];
   useEffect(() => {
     setSkips([]);
     setReview(false);
@@ -983,18 +986,19 @@ function VotePage() {
             <div>
               <strong>{round.title}</strong>
               <span>
-                {mine.length} of {all.length} voted · {all.length - mine.length}{" "}
-                remaining
+                {yesCount} of 10 dinners selected · {round.season || "Current round"}
               </span>
             </div>
             <div className="progress-track">
               <span
                 style={{
-                  width: `${(mine.length / Math.max(all.length, 1)) * 100}%`,
+                  width: `${Math.min(1, yesCount / 10) * 100}%`,
                 }}
               />
             </div>
           </div>
+          <button disabled={busy || done} onClick={()=>act(`/rounds/${round.id}/finish`,"POST",{}).catch(()=>{})}>Finish Early</button>
+          {last && !card && <button onClick={()=>act("/votes","PUT",{roundId:round.id,recipeId:last.id,choice:last.choice}).then(()=>setLast(null)).catch(()=>{})}>Undo last vote</button>}
           {!card ? (
             <Empty
               icon={CheckCircle2}
@@ -1337,8 +1341,8 @@ function ResultsPage() {
     )
     .sort(
       (a, b) =>
-        b.yes - a.yes ||
-        b.maybe - a.maybe ||
+        Number(b.yes===3)-Number(a.yes===3) ||
+        (b.yes*3+b.maybe)-(a.yes*3+a.maybe) ||
         a.r.title.localeCompare(b.r.title),
     );
   return (
@@ -1402,13 +1406,13 @@ function ResultsPage() {
                 <div className="progress-track">
                   <span
                     style={{
-                      width: `${(cast.length / Math.max(1, round?.recipeIds.length || 0)) * 100}%`,
+                      width: `${Math.min(1, cast.filter(v=>v.choice==="yes").length/10) * 100}%`,
                     }}
                   />
                 </div>
                 <small>
-                  {cast.length} / {round?.recipeIds.length || 0} voted{" "}
-                  {cast.length === round?.recipeIds.length
+                  {cast.filter(v=>v.choice==="yes").length} / 10 dinners selected{" "}
+                  {(cast.filter(v=>v.choice==="yes").length>=10 || round?.finishedUsers?.includes(u.id) || cast.length === round?.recipeIds.length)
                     ? "· All done!"
                     : "· Still deciding"}
                 </small>
@@ -1441,14 +1445,14 @@ function ResultsPage() {
           {data.users.map((u) => (
             <span key={u.id}>{u.name}</span>
           ))}
-          <span>MATCH</span>
+          <span>SCORE</span>
         </div>
-        {ranked.map(({ r, yes }) => (
+        {ranked.map(({ r, yes, maybe }) => (
           <div className="results-row" key={r.id}>
             <button className="result-recipe" onClick={() => go("/recipes")}>
               <Food recipe={r} />
               <span>
-                <strong>{r.title}</strong>
+                <strong>{r.title} · {yes*3+maybe} points</strong>
                 <small>{r.cut}</small>
               </span>
             </button>
@@ -1473,7 +1477,7 @@ function ResultsPage() {
               );
             })}
             <Badge tone={yes === 3 ? "green" : yes === 2 ? "peach" : ""}>
-              {yes} / 3 YES
+              {yes*3+maybe} points · {yes} / 3 YES
             </Badge>
           </div>
         ))}
@@ -1575,6 +1579,7 @@ function AddShopping({
                   unit: f.get("unit"),
                   section: f.get("section"),
                   requestId: request?.id || null,
+                  ingredientId: f.get("ingredientId") || null,
                 },
                 "Added to the shared shopping list",
               );
@@ -1582,6 +1587,7 @@ function AddShopping({
             } catch {}
           }}
         >
+          <label>Combine with a catalog ingredient (optional)<select name="ingredientId"><option value="">Keep as a separate product</option>{data.ingredientCatalog.map(i=><option key={i.id} value={i.id}>{i.name}</option>)}</select></label>
           <p className="notice">
             Confirm the product and quantity. Similar requests stay separate so
             nothing gets silently combined.
@@ -2131,6 +2137,7 @@ function GenerateMenu({
   onCreated: (id: number) => void;
 }) {
   const { data, act, busy } = useApp();
+  const [planLength,setPlanLength]=useState(7);
   return (
     <Modal title="A delicious week, planned together" onClose={onClose}>
       <form
@@ -2149,6 +2156,8 @@ function GenerateMenu({
                 attendees: f.getAll("attendees"),
                 portions: Number(f.get("portions")),
                 leftovers: f.get("leftovers") === "on",
+                provisional: f.get("provisional") === "on",
+                schedule: f.get('customSchedule')==='on' ? Array.from({length:Number(f.get('days'))},(_,offset)=>({offset,home:f.get(`home-${offset}`)==='on',attendees:f.getAll(`people-${offset}`),portions:Number(f.get(`servings-${offset}`))})) : undefined,
               },
               "Your draft menu is ready to review",
             );
@@ -2178,12 +2187,13 @@ function GenerateMenu({
           </label>
           <label>
             Plan for
-            <select name="days">
+            <select name="days" onChange={e=>setPlanLength(Number(e.target.value))}>
               <option value="7">7 days</option>
               <option value="14">14 days</option>
             </select>
           </label>
         </div>
+        <label><input type="checkbox" name="provisional" /> Generate a provisional plan if someone is still voting</label>
         <label>
           Use these family votes
           <select name="roundId">
@@ -2224,6 +2234,13 @@ function GenerateMenu({
             </div>
           </fieldset>
         </div>
+        <details><summary>Choose home dinners, attendance and servings for each day</summary><label><input type="checkbox" name="customSchedule" /> Use this per-day schedule instead of the defaults above</label>
+          {Array.from({length:planLength},(_,i)=><fieldset key={i}><legend>Day {i+1}</legend>
+            <label><input type="checkbox" name={`home-${i}`} defaultChecked /> Home-cooked dinner</label>
+            <div className="check-row">{data.users.map(u=><label key={u.id}><input type="checkbox" name={`people-${i}`} value={u.id} defaultChecked />{u.name}</label>)}</div>
+            <label>Servings<input type="number" name={`servings-${i}`} min="0.5" step="0.5" defaultValue="3" required /></label>
+          </fieldset>)}
+        </details>
         <label className="checkbox-label">
           <input name="leftovers" type="checkbox" defaultChecked />
           Plan intentional leftovers from a larger batch
@@ -2280,6 +2297,7 @@ function EditDay({
                 variationId: kind === "cook" ? variationId || null : null,
                 portions: Number(f.get("portions")),
                 attendees: people,
+                leftoverRecipeId: kind==="leftover" ? f.get("leftoverRecipeId") || null : null,
                 leftoverOf:
                   kind === "leftover" ? Number(f.get("leftoverOf")) : null,
               },
@@ -2300,6 +2318,7 @@ function EditDay({
             <option value="out">Dinner out / no cooking</option>
           </select>
         </label>
+        {kind === "leftover" && <label>Serve reserved batch as<select name="leftoverRecipeId" defaultValue={day.leftover_recipe_id||''}><option value="">Original dinner</option><option value="brisket-tacos">Brisket tacos (brisket source only)</option><option value="brisket-bowls">Brisket rice bowls (brisket source only)</option></select></label>}
         {kind === "cook" && (
           <label>
             Recipe
@@ -2536,7 +2555,7 @@ function MenuPage() {
           <div className="menu-days">
             {menu.days.map((d, i) => {
               const r = resolveRecipeView(
-                  data.recipes.find((r) => r.id === d.recipe_id),
+                  data.recipes.find((r) => r.id === (d.leftover_recipe_id || d.recipe_id)),
                   d.variation_id,
                 ),
                 source = menu.days.find((x) => x.id === d.leftover_of),
@@ -2598,6 +2617,7 @@ function MenuPage() {
                       <p>{d.reason}</p>
                     </details>
                   </div>
+                  {admin && d.recipe_id && <button disabled={busy || !!data.cookedMeals?.some(h=>h.menu_day_id===d.id)} onClick={()=>act(`/menu-days/${d.id}/cooked`,"POST",{}).catch(()=>{})}>{data.cookedMeals?.some(h=>h.menu_day_id===d.id)?"Cooked ✓":"Mark as Cooked"}</button>}
                   <div className="day-people">
                     <div className="avatar-stack">
                       {(JSON.parse(d.attendees) as string[]).map((id) => (
@@ -2922,6 +2942,7 @@ function ShoppingPage() {
                         </span>
                       </label>
                       <div className="shopping-amount">
+                        {item.packageCount!=null && <small>{item.packageCount} confirmed-size packages</small>}
                         <strong>
                           {amount(
                             item.purchaseQuantity ?? item.quantity,
@@ -2936,6 +2957,14 @@ function ShoppingPage() {
                               : "Recipe consumption"}
                         </small>
                       </div>
+                      {admin && item.ingredientId && <details><summary>Inventory & package size</summary>
+                        <form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);act(`/pantry-inventory/${item.ingredientId}`,'PUT',{quantity:Number(f.get('quantity')),unit:item.unit}).catch(()=>{});}}>
+                          <label>Confirmed pantry ({item.unit})<input name="quantity" type="number" min="0" step="any" required /></label><button>Save pantry quantity</button>
+                        </form>
+                        <form onSubmit={e=>{e.preventDefault();const f=new FormData(e.currentTarget);act(`/purchase-rules/${item.ingredientId}`,'PUT',{packageSize:Number(f.get('size')),unit:item.unit}).catch(()=>{});}}>
+                          <label>Verified package size ({item.unit})<input name="size" type="number" min="0.001" step="any" required /></label><button>Confirm package size</button>
+                        </form>
+                      </details>}
                       {admin && (
                         <div className="shopping-actions">
                           <button
@@ -3159,6 +3188,7 @@ function SettingsPage() {
               Applies when generating or refreshing a menu. Existing approved
               menus stay as planned.
             </p>
+            {admin && <label>Seasonal share for new rounds (%)<input type="number" min="0" max="100" defaultValue={Math.round((data.settings.seasonalWeight??.6)*100)} onBlur={e=>{const weight=Number(e.target.value)/100;if(weight>=0&&weight<=1)act('/seasonal-weight','PUT',{weight}).catch(()=>{});}} /></label>}
             <div className="rules-list">
               <span>
                 <CheckCircle2 size={16} /> Gluten-free by default
@@ -3357,6 +3387,8 @@ function RecipeDetail({
             quantity: i.quantity,
             unit: i.unit,
             note: i.note || "",
+            form: i.form || "as_purchased",
+            substitutions: i.substitutions || [],
           })),
           madeBefore:
             f.get("madeBefore") === "unknown"
@@ -3972,6 +4004,8 @@ function NewRecipe({ onClose }: { onClose: () => void }) {
                   quantity: i.quantity,
                   unit: i.unit,
                   note: i.note || "",
+            form: i.form || "as_purchased",
+            substitutions: i.substitutions || [],
                 })),
                 steps: String(f.get("steps"))
                   .split("\n")

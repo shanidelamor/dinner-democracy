@@ -57,9 +57,9 @@ test("three independent family sessions complete the core household workflow", a
     await p.goto("/vote");
     await expect(p.locator(".swipe-card")).toBeVisible();
     await p.getByRole("button", { name: "YES PLEASE" }).click();
-    await expect(p.getByText("1 of 40 voted")).toBeVisible();
+    await expect(p.getByText("1 of 10 dinners selected")).toBeVisible();
     await p.reload();
-    await expect(p.getByText("1 of 40 voted")).toBeVisible();
+    await expect(p.getByText("1 of 10 dinners selected")).toBeVisible();
   }
   await x.screenshot({
     path: testInfo.outputPath("vote-mobile.png"),
@@ -82,6 +82,7 @@ test("three independent family sessions complete the core household workflow", a
   await page.getByRole("button", { name: "Plan a new week" }).click();
   await page.getByLabel("Menu name").fill("Browser family menu");
   await page.getByLabel("Starting").fill("2030-01-07");
+  await page.getByLabel("Generate a provisional plan if someone is still voting").check();
   await page.getByRole("button", { name: "Generate my menu" }).click();
   await expect(page.locator(".menu-day")).toHaveCount(7);
   await page.getByRole("button", { name: "Edit 2030-01-07" }).click();
@@ -214,6 +215,7 @@ test("three independent family sessions complete the core household workflow", a
   await page.getByLabel("Menu name").fill("Two-week fridge menu");
   await page.getByLabel("Starting").fill("2030-02-04");
   await page.getByLabel("Plan for").selectOption("14");
+  await page.getByLabel("Generate a provisional plan if someone is still voting").check();
   await page.getByRole("button", { name: "Generate my menu" }).click();
   await expect(page.locator(".menu-day")).toHaveCount(14);
   await page.emulateMedia({ media: "print" });
@@ -250,6 +252,7 @@ test("recipe options change cooking photos and approved shopping without mixing 
       attendees: ["shani", "james", "xander"],
       portions: 3,
       leftovers: false,
+            provisional: true,
     },
   });
   expect(generated.ok()).toBeTruthy();
@@ -362,4 +365,24 @@ test("recipe options change cooking photos and approved shopping without mixing 
   await detail.screenshot({
     path: testInfo.outputPath("mushroom-chicken-cream-option.png"),
   });
+});
+
+test('voting stops at ten YES, resumes after reload, and undo reopens the deck', async ({page})=>{
+ await page.request.post('/api/login',{data:{userId:'shani',password:'browser-admin-password'}});
+ await page.request.post('/api/rounds',{data:{title:'Ten-dinner browser check'}});
+ await page.goto('/vote');
+ await page.getByRole('button',{name:'MAYBE',exact:true}).click();
+ await expect(page.getByText('0 of 10 dinners selected')).toBeVisible();
+ for(let i=1;i<=10;i++) {
+   await page.getByRole('button',{name:'YES PLEASE'}).click();
+   await expect(page.getByText(`${i} of 10 dinners selected`)).toBeVisible();
+   if(i===4) {await page.reload();await expect(page.getByText('4 of 10 dinners selected')).toBeVisible();}
+ }
+ await expect(page.locator('.swipe-card')).toHaveCount(0);
+ await page.getByRole('button',{name:'Undo last vote',exact:true}).click();
+ await expect(page.getByText('9 of 10 dinners selected')).toBeVisible();
+ await expect(page.locator('.swipe-card')).toHaveCount(1);
+ await page.getByRole('button',{name:'Finish Early',exact:true}).click();
+ await page.reload();
+ await expect(page.locator('.swipe-card')).toHaveCount(0);
 });

@@ -1,3 +1,4 @@
+import { seasonTags } from "./voting.js";
 import { createHash } from "node:crypto";
 import { mergeCatalogRecipe } from "./catalog-updates.js";
 import { recipes, defaultPantry, ingredientDefinitions } from "./recipes.js";
@@ -26,7 +27,25 @@ export function initSchema(db, catalog = recipes) {
   CREATE TABLE IF NOT EXISTS catalog_meta(key TEXT PRIMARY KEY,value TEXT NOT NULL);
   CREATE TABLE IF NOT EXISTS schema_migrations(version INTEGER PRIMARY KEY,applied_at TEXT DEFAULT CURRENT_TIMESTAMP);
   INSERT OR IGNORE INTO schema_migrations(version) VALUES(1);`);
+  db.exec(`
+  CREATE TABLE IF NOT EXISTS round_context(round_id INTEGER PRIMARY KEY REFERENCES rounds(id),local_date TEXT NOT NULL,season TEXT NOT NULL,seasonal_weight REAL NOT NULL);
+  CREATE TABLE IF NOT EXISTS round_candidate_order(round_id INTEGER REFERENCES rounds(id),recipe_id TEXT REFERENCES recipes(id),position INTEGER NOT NULL,PRIMARY KEY(round_id,recipe_id));
+  CREATE TABLE IF NOT EXISTS voter_progress(round_id INTEGER REFERENCES rounds(id),user_id TEXT REFERENCES users(id),finished INTEGER NOT NULL DEFAULT 0,PRIMARY KEY(round_id,user_id));
+  CREATE TABLE IF NOT EXISTS cooked_meals(id INTEGER PRIMARY KEY,recipe_id TEXT NOT NULL REFERENCES recipes(id),cooked_date TEXT NOT NULL,diners REAL NOT NULL CHECK(diners>0),meal_plan_id INTEGER REFERENCES menus(id),menu_day_id INTEGER UNIQUE REFERENCES menu_days(id));
+  CREATE TABLE IF NOT EXISTS shopping_identity(manual_id INTEGER PRIMARY KEY REFERENCES shopping_manual(id),ingredient_id TEXT NOT NULL REFERENCES ingredient_definitions(id));
+  CREATE TABLE IF NOT EXISTS purchase_rules(ingredient_id TEXT PRIMARY KEY REFERENCES ingredient_definitions(id),unit TEXT NOT NULL,package_size REAL NOT NULL CHECK(package_size>0));
+  CREATE TABLE IF NOT EXISTS pantry_inventory(ingredient_id TEXT PRIMARY KEY REFERENCES ingredient_definitions(id),quantity REAL NOT NULL CHECK(quantity>=0),unit TEXT NOT NULL);
+  INSERT OR IGNORE INTO settings VALUES('seasonalWeight','0.6');
+  INSERT OR IGNORE INTO schema_migrations(version) VALUES(5);`);
+  const ingredientColumns=db.prepare("PRAGMA table_info(recipe_ingredients)").all();
+  if(!ingredientColumns.some(c=>c.name==='form')) db.exec("ALTER TABLE recipe_ingredients ADD COLUMN form TEXT NOT NULL DEFAULT 'as_purchased'");
+  if(!ingredientColumns.some(c=>c.name==='substitutions')) db.exec("ALTER TABLE recipe_ingredients ADD COLUMN substitutions TEXT NOT NULL DEFAULT '[]'");
+  for(const row of db.prepare("SELECT id,data FROM recipes").all()) {
+    const recipe=JSON.parse(row.data);
+    if(!recipe.seasons) db.prepare("UPDATE recipes SET data=? WHERE id=?").run(JSON.stringify({...recipe,seasons:seasonTags({...recipe,id:row.id})}),row.id);
+  }
   const columns = db.prepare("PRAGMA table_info(menu_days)").all();
+  if (!columns.some(c=>c.name==="leftover_recipe_id")) db.exec("ALTER TABLE menu_days ADD COLUMN leftover_recipe_id TEXT REFERENCES recipes(id)");
   if (!columns.some((c) => c.name === "variation_id"))
     db.exec("ALTER TABLE menu_days ADD COLUMN variation_id TEXT");
   db.prepare(
@@ -63,7 +82,7 @@ export function initSchema(db, catalog = recipes) {
       if (!row) {
         db.prepare("INSERT INTO recipes(id,data,version) VALUES(?,?,1)").run(
           r.id,
-          JSON.stringify(r),
+          JSON.stringify({...r,seasons:r.seasons||seasonTags(r)}),
         );
         saveIngredients(db, r.id, r.ingredients);
         db.prepare(
@@ -141,15 +160,15 @@ export function saveIngredients(db, id, ingredients) {
   ingredients.forEach((i, index) =>
     db
       .prepare(
-        "INSERT INTO recipe_ingredients(recipe_id,ingredient_id,position,quantity,unit,note) VALUES(?,?,?,?,?,?)",
+        "INSERT INTO recipe_ingredients(recipe_id,ingredient_id,position,quantity,unit,note,form,substitutions) VALUES(?,?,?,?,?,?,?,?)",
       )
-      .run(id, i.id, index, i.quantity, i.unit, i.note || ""),
+      .run(id, i.id, index, i.quantity, i.unit, i.note || "",i.form||"as_purchased",JSON.stringify(i.substitutions||[])),
   );
 }
 export const allRecipes = (db) => {
   const ingredients = db
     .prepare(
-      "SELECT ri.recipe_id,ri.ingredient_id id,ri.quantity,ri.unit,ri.note,d.name,d.section FROM recipe_ingredients ri JOIN ingredient_definitions d ON d.id=ri.ingredient_id ORDER BY ri.position",
+      "SELECT ri.recipe_id,ri.ingredient_id id,ri.quantity,ri.unit,ri.note,ri.form,ri.substitutions,d.name,d.section FROM recipe_ingredients ri JOIN ingredient_definitions d ON d.id=ri.ingredient_id ORDER BY ri.position",
     )
     .all();
   const managedPhoto = (path) =>
@@ -164,6 +183,7 @@ export const allRecipes = (db) => {
         catalog = recipes.find((r) => r.id === row.id);
       return {
         ...data,
+        seasons: data.seasons || seasonTags(data),
         version: row.version,
         ...(catalog && managedPhoto(data.image)
           ? { image: catalog.image, imageAlt: catalog.imageAlt }
@@ -186,7 +206,7 @@ export const allRecipes = (db) => {
         ...(data.catalogConflicts?.length ? { catalogProposal: catalog } : {}),
         ingredients: ingredients
           .filter((i) => i.recipe_id === row.id)
-          .map(({ recipe_id, ...i }) => i),
+          .map(({ recipe_id, ...i }) => ({...i,substitutions:JSON.parse(i.substitutions||"[]")})),
       };
     });
 };
